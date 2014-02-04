@@ -197,6 +197,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 /* Handle a single request from a client */
 static void filed_handle_client(int fd) {
 	struct filed_fileinfo *fileinfo, fileinfo_b;
+	ssize_t sendfile_ret;
 	char *path, path_b[1010];
 	char *date_current, date_current_b[64];
 	FILE *fp;
@@ -244,9 +245,12 @@ static void filed_handle_client(int fd) {
 
 		filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
-		sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
-
-		filed_log_msg("SEND_COMPLETE IFD=... OFD=... BYTES=...");
+		sendfile_ret = sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
+		if (sendfile_ret < 0 || ((size_t) sendfile_ret) != fileinfo->len) {
+			filed_log_msg("SEND_COMPLETE STATUS=ERROR IFD=... OFD=... BYTES=... BYTES_SENT=...");
+		} else {
+			filed_log_msg("SEND_COMPLETE STATUS=OK IFD=... OFD=... BYTES=...");
+		}
 
 		close(fileinfo->fd);
 
