@@ -69,6 +69,8 @@ static int filed_logging_thread_init(void) {
 struct filed_fileinfo {
 	int fd;
 	size_t len;
+	char *lastmod;
+	char *type;
 };
 
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
@@ -88,13 +90,17 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	buffer->fd = fd;
 	buffer->len = len;
 
+	/* XXX:TODO: Determine */
+	buffer->type = "text/plain";
+	buffer->lastmod = "Now";
+
 	return(buffer);
 }
 
 static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
-	/* XXX:TODO: Unimplemented */
 	setlinebuf(fp);
 
+	/* XXX:TODO: Unimplemented */
 	fp = fp;
 	buffer = buffer;
 	buffer_len = buffer_len;
@@ -107,8 +113,13 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 static void filed_handle_client(int fd) {
 	struct filed_fileinfo *fileinfo, fileinfo_b;
 	char *path, path_b[1010];
+	char *date_current;
 	FILE *fp;
 
+	/* XXX:TODO: Determine */
+	date_current = "Now";
+
+	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
 	if (fp == NULL) {
 		close(fd);
@@ -127,7 +138,13 @@ static void filed_handle_client(int fd) {
 	if (fileinfo == NULL) {
 		/* XXX: TODO: Return error page */
 	} else {
-		/* XXX: TODO: Send HTTP response header */
+		fprintf(fp, "HTTP/1.1 200 OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
+			date_current,
+			fileinfo->lastmod,
+			(unsigned long long) fileinfo->len,
+			fileinfo->type
+		);
+
 		sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
 
 		close(fileinfo->fd);
