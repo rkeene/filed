@@ -1,10 +1,14 @@
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
 
 /* Default values */
 #define MAX_FAILURE_COUNT 30
@@ -62,9 +66,75 @@ static int filed_logging_thread_init(void) {
 	return(0);
 }
 
-static void filed_handle_client(int fd) {
+struct filed_fileinfo {
+	int fd;
+	size_t len;
+};
+
+static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
+	/* XXX:TODO: Cache file descriptors */
+
+	off_t len;
+	int fd;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		return(NULL);
+	}
+
+	len = lseek(fd, 0, SEEK_END);
+	lseek(fd, 0, SEEK_SET);
+
+	buffer->fd = fd;
+	buffer->len = len;
+
+	return(buffer);
+}
+
+static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 	/* XXX:TODO: Unimplemented */
-	fd = fd;
+	setlinebuf(fp);
+
+	fp = fp;
+	buffer = buffer;
+	buffer_len = buffer_len;
+
+	fflush(fp);
+
+	return("./hello_world.txt");
+}
+
+static void filed_handle_client(int fd) {
+	struct filed_fileinfo *fileinfo, fileinfo_b;
+	char *path, path_b[1010];
+	FILE *fp;
+
+	fp = fdopen(fd, "w+b");
+	if (fp == NULL) {
+		close(fd);
+
+		return;
+	}
+
+	path = filed_get_http_request(fp, path_b, sizeof(path_b));
+	if (path == NULL) {
+		fclose(fp);
+
+		return;
+	}
+
+	fileinfo = filed_open_file(path, &fileinfo_b);
+	if (fileinfo == NULL) {
+		/* XXX: TODO: Return error page */
+	} else {
+		/* XXX: TODO: Send HTTP response header */
+		sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
+
+		close(fileinfo->fd);
+	}
+
+	fclose(fp);
+
 	return;
 }
 
@@ -105,9 +175,6 @@ static void *filed_worker_thread(void *arg_v) {
 
 		/* Handle socket */
 		filed_handle_client(fd);
-
-		/* Cleanup */
-		close(fd);
 	}
 
 	/* XXX:TODO: Report error */
@@ -146,6 +213,8 @@ int main(int argc, char **argv) {
 	/* Create listening socket */
 	fd = filed_listen(bind_addr, port);
 	if (fd < 0) {
+		perror("filed_listen");
+
 		return(1);
 	}
 
