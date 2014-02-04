@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
 
@@ -98,16 +99,48 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 }
 
 static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
+	char *method, *path, *version;
+	char tmpbuf[1010];
+	int i;
+
 	setlinebuf(fp);
 
-	/* XXX:TODO: Unimplemented */
-	fp = fp;
-	buffer = buffer;
-	buffer_len = buffer_len;
+	fgets(buffer, buffer_len, fp);
+
+	method = buffer;
+
+	buffer = strchr(buffer, ' ');
+	if (buffer == NULL) {
+		return(NULL);
+	}
+
+	*buffer = '\0';
+	buffer++;
+
+	path = buffer;
+
+	buffer = strchr(buffer, ' ');
+	if (buffer != NULL) {
+		*buffer = '\0';
+		buffer++;
+
+		version = buffer;
+	}
+
+	for (i = 0; i < 100; i++) {
+		fgets(tmpbuf, sizeof(tmpbuf), fp);
+		if (memcmp(tmpbuf, "\r\n", 2) == 0) {
+			break;
+		}
+	}
 
 	fflush(fp);
 
-	return("./hello_world.txt");
+	/* IGNORED */
+	version = version;
+	method = method;
+
+	return(path);
 }
 
 static void filed_handle_client(int fd) {
@@ -129,6 +162,7 @@ static void filed_handle_client(int fd) {
 
 	path = filed_get_http_request(fp, path_b, sizeof(path_b));
 	if (path == NULL) {
+		/* XXX: TODO: Return error page */
 		fclose(fp);
 
 		return;
