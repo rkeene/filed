@@ -10,6 +10,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <time.h>
 
 /* Default values */
 #define MAX_FAILURE_COUNT 30
@@ -22,10 +23,21 @@ struct filed_worker_thread_args {
 	int fd;
 };
 
+/* File information */
+struct filed_fileinfo {
+	int fd;
+	size_t len;
+	char *lastmod;
+	char lastmod_b[64];
+	char *type;
+};
+
+/* Initialize process */
 static void filed_init(void) {
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 }
 
+/* Listen on a particular address/port */
 static int filed_listen(const char *address, unsigned int port) {
 	struct sockaddr_in6 addr;
 	int pton_ret, bind_ret, listen_ret;
@@ -62,18 +74,35 @@ static int filed_listen(const char *address, unsigned int port) {
 	return(fd);
 }
 
+/* Initialize logging thread */
 static int filed_logging_thread_init(void) {
 	/* XXX:TODO: Unimplemented */
 	return(0);
 }
 
-struct filed_fileinfo {
-	int fd;
-	size_t len;
-	char *lastmod;
-	char *type;
-};
+/* Log a message */
+static void filed_log_msg(const char *buffer) {
+	/* XXX:TODO: Unimplemented */
+	buffer = buffer;
+	return;
+}
 
+/* Format time per RFC2616 */
+static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
+	struct tm timeinfo_tm, *timeinfo_tm_p;
+
+	timeinfo_tm_p = gmtime_r(&timeinfo, &timeinfo_tm);
+	if (timeinfo_tm_p == NULL) {
+		return("unknown");
+	}
+
+	buffer[buffer_len - 1] = '\0';
+	buffer_len = strftime(buffer, buffer_len - 1, "%a, %d %b %Y %H:%M:%S GMT", timeinfo_tm_p);
+
+	return(buffer);
+}
+
+/* Open a file and return file information */
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
 	/* XXX:TODO: Cache file descriptors */
 
@@ -93,17 +122,18 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 
 	/* XXX:TODO: Determine */
 	buffer->type = "text/plain";
-	buffer->lastmod = "Now";
+	buffer->lastmod = filed_format_time(buffer->lastmod_b, sizeof(buffer->lastmod_b), time(NULL) - 30);
 
 	return(buffer);
 }
 
+/* Process an HTTP request and return the path requested */
 static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
-	char *method, *path, *version;
+	char *method, *path;
 	char tmpbuf[1010];
 	int i;
 
-	setlinebuf(fp);
+	filed_log_msg("WAIT_FOR_REQUEST FD=...");
 
 	fgets(buffer, buffer_len, fp);
 
@@ -111,6 +141,8 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 
 	buffer = strchr(buffer, ' ');
 	if (buffer == NULL) {
+		filed_log_msg("GOT_REQUEST FD=... ERROR=format");
+
 		return(NULL);
 	}
 
@@ -123,9 +155,11 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 	if (buffer != NULL) {
 		*buffer = '\0';
 		buffer++;
-
-		version = buffer;
 	}
+
+	filed_log_msg("GOT_REQUEST FD=... PATH=...");
+
+	filed_log_msg("WAIT_FOR_HEADERS FD=...");
 
 	for (i = 0; i < 100; i++) {
 		fgets(tmpbuf, sizeof(tmpbuf), fp);
@@ -134,23 +168,41 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 		}
 	}
 
+	filed_log_msg("GOT_HEADERS FD=...");
+
 	fflush(fp);
 
-	/* IGNORED */
-	version = version;
-	method = method;
+	/* We only handle the "GET" method */
+	if (strcasecmp(method, "get") != 0) {
+		return(NULL);
+	}
 
 	return(path);
 }
 
+/* Return an error page */
+static void filed_error_page(FILE *fp, const char *date_current, int error_number) {
+	char *error_string = "ERROR";
+
+	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s",
+		error_number,
+		date_current,
+		date_current,
+		(unsigned long long) strlen(error_string),
+		"text/html",
+		error_string
+	);
+}
+
+/* Handle a single request from a client */
 static void filed_handle_client(int fd) {
 	struct filed_fileinfo *fileinfo, fileinfo_b;
 	char *path, path_b[1010];
-	char *date_current;
+	char *date_current, date_current_b[64];
 	FILE *fp;
 
-	/* XXX:TODO: Determine */
-	date_current = "Now";
+	/* Determine current time */
+	date_current = filed_format_time(date_current_b, sizeof(date_current_b), time(NULL));
 
 	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
@@ -161,8 +213,14 @@ static void filed_handle_client(int fd) {
 	}
 
 	path = filed_get_http_request(fp, path_b, sizeof(path_b));
+
+	filed_log_msg("PROCESS_REPLY_START FD=... PATH=...");
+
 	if (path == NULL) {
-		/* XXX: TODO: Return error page */
+		filed_error_page(fp, date_current, 500);
+
+		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=500");
+
 		fclose(fp);
 
 		return;
@@ -170,7 +228,9 @@ static void filed_handle_client(int fd) {
 
 	fileinfo = filed_open_file(path, &fileinfo_b);
 	if (fileinfo == NULL) {
-		/* XXX: TODO: Return error page */
+		filed_error_page(fp, date_current, 404);
+
+		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=404");
 	} else {
 		fprintf(fp, "HTTP/1.1 200 OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
 			date_current,
@@ -178,17 +238,29 @@ static void filed_handle_client(int fd) {
 			(unsigned long long) fileinfo->len,
 			fileinfo->type
 		);
+		fflush(fp);
+
+		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=200");
+
+		filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
 		sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
 
+		filed_log_msg("SEND_COMPLETE IFD=... OFD=... BYTES=...");
+
 		close(fileinfo->fd);
+
+		filed_log_msg("CLOSE_FILE FD=...");
 	}
+
+	filed_log_msg("CLOSE_CONNECTION FD=...");
 
 	fclose(fp);
 
 	return;
 }
 
+/* Handle incoming connections */
 static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct sockaddr_in6 addr;
@@ -216,10 +288,16 @@ static void *filed_worker_thread(void *arg_v) {
 		 * accept() failing
 		 */
 		if (fd < 0) {
+			/* Log the new connection */
+			filed_log_msg("ACCEPT_FAILED");
+
 			failure_count++;
 
 			continue;
 		}
+
+		/* Log the new connection */
+		filed_log_msg("NEW_CONNECTION SRC_ADDR=... SRC_PORT=... FD=...");
 
 		/* Reset failure count*/
 		failure_count = 0;
@@ -232,6 +310,7 @@ static void *filed_worker_thread(void *arg_v) {
 	return(NULL);
 }
 
+/* Create worker threads */
 static int filed_worker_threads_init(int fd, int thread_count) {
 	struct filed_worker_thread_args *arg;
 	pthread_t threadid;
@@ -252,6 +331,7 @@ static int filed_worker_threads_init(int fd, int thread_count) {
 	return(0);
 }
 
+/* Run process */
 int main(int argc, char **argv) {
 	int port = PORT, thread_count = THREAD_COUNT;
 	const char *bind_addr = BIND_ADDR;
