@@ -14,7 +14,7 @@
 
 /* Default values */
 #define MAX_FAILURE_COUNT 30
-#define PORT 8081
+#define PORT 8080
 #define THREAD_COUNT 10
 #define BIND_ADDR "::"
 
@@ -115,7 +115,9 @@ static int filed_logging_thread_init(void) {
 	return(0);
 }
 
+/* XXX:TODO: Unimplemented */
 #define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
+
 static void filed_log_msg(const char *buffer) {
 	/* XXX:TODO: Unimplemented */
 	fprintf(stderr, "%s\n", buffer);
