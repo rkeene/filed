@@ -25,6 +25,8 @@ struct filed_worker_thread_args {
 
 /* File information */
 struct filed_fileinfo {
+	pthread_mutex_t mutex;
+	char *path;
 	int fd;
 	size_t len;
 	char *lastmod;
@@ -32,9 +34,35 @@ struct filed_fileinfo {
 	char *type;
 };
 
+/* Global variables */
+struct filed_fileinfo *filed_fileinfo_fdcache;
+unsigned int filed_fileinfo_fdcache_size = 8192;
+
 /* Initialize process */
-static void filed_init(void) {
+static int filed_init(void) {
+	unsigned int idx;
+	int mutex_init_ret;
+
 	mlockall(MCL_CURRENT | MCL_FUTURE);
+
+	filed_fileinfo_fdcache = malloc(sizeof(*filed_fileinfo_fdcache) * filed_fileinfo_fdcache_size);
+	if (filed_fileinfo_fdcache == NULL) {
+		return(1);
+	}
+
+	for (idx = 0; idx < filed_fileinfo_fdcache_size; idx++) {
+		mutex_init_ret = pthread_mutex_init(&filed_fileinfo_fdcache[idx].mutex, NULL);
+		if (mutex_init_ret != 0) {
+			return(1);
+		}
+
+		filed_fileinfo_fdcache[idx].path = strdup("");
+		filed_fileinfo_fdcache[idx].fd = -1;
+		filed_fileinfo_fdcache[idx].lastmod = "";
+		filed_fileinfo_fdcache[idx].type = "";
+	}
+
+	return(0);
 }
 
 /* Listen on a particular address/port */
@@ -81,9 +109,11 @@ static int filed_logging_thread_init(void) {
 }
 
 /* Log a message */
+#define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
 static void filed_log_msg(const char *buffer) {
 	/* XXX:TODO: Unimplemented */
-	buffer = buffer;
+	fprintf(stderr, "%s\n", buffer);
+
 	return;
 }
 
@@ -102,27 +132,95 @@ static char *filed_format_time(char *buffer, size_t buffer_len, const time_t tim
 	return(buffer);
 }
 
+/* hash */
+static unsigned int filed_hash(const unsigned char *value, unsigned int modulus) {
+	unsigned char curr;
+	unsigned int retval;
+
+	retval = modulus - 1;
+
+	while ((curr = *value)) {
+		if (curr < 32) {
+			curr = 255 - curr;
+		} else {
+			curr -= 32;
+		}
+
+		retval <<= 5;
+		retval += curr;
+
+		value++;
+	}
+
+	retval = retval % modulus;
+
+	return(retval);
+}
+
 /* Open a file and return file information */
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
-	/* XXX:TODO: Cache file descriptors */
-
+	struct filed_fileinfo *cache;
+	unsigned int cache_idx;
 	off_t len;
 	int fd;
 
-	fd = open(path, O_RDONLY);
+	cache_idx = filed_hash((const unsigned char *) path, filed_fileinfo_fdcache_size);
+
+	cache = &filed_fileinfo_fdcache[cache_idx];
+
+	filed_log_msg_debug("Locking mutex for idx: %lu", (unsigned long) cache_idx);
+
+	pthread_mutex_lock(&cache->mutex);
+
+	filed_log_msg_debug("Completed locking mutex for idx: %lu", (unsigned long) cache_idx);
+
+	if (strcmp(path, cache->path) != 0) {
+		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
+
+		fd = open(path, O_RDONLY);
+		if (fd < 0) {
+			pthread_mutex_unlock(&cache->mutex);
+
+			return(NULL);
+		}
+
+		free(cache->path);
+		if (cache->fd >= 0) {
+			close(cache->fd);
+		}
+
+		len = lseek(fd, 0, SEEK_END);
+		lseek(fd, 0, SEEK_SET);
+
+		cache->fd = fd;
+		cache->len = len;
+		cache->path = strdup(path);
+
+		/* XXX:TODO: Determine */
+		cache->type = "text/plain";
+		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
+	} else {
+		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);
+	}
+
+	/*
+	 * We have to make a duplicate FD, because once we release the cache
+	 * mutex, the file descriptor may be closed
+	 */
+	fd = dup(cache->fd);
 	if (fd < 0) {
+		pthread_mutex_unlock(&cache->mutex);
+
 		return(NULL);
 	}
 
-	len = lseek(fd, 0, SEEK_END);
-	lseek(fd, 0, SEEK_SET);
-
 	buffer->fd = fd;
-	buffer->len = len;
+	buffer->len = cache->len;
+	buffer->type = cache->type;
+	memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
+	buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
 
-	/* XXX:TODO: Determine */
-	buffer->type = "text/plain";
-	buffer->lastmod = filed_format_time(buffer->lastmod_b, sizeof(buffer->lastmod_b), time(NULL) - 30);
+	pthread_mutex_unlock(&cache->mutex);
 
 	return(buffer);
 }
@@ -198,6 +296,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 static void filed_handle_client(int fd) {
 	struct filed_fileinfo *fileinfo, fileinfo_b;
 	ssize_t sendfile_ret;
+	off_t sendfile_offset;
 	char *path, path_b[1010];
 	char *date_current, date_current_b[64];
 	FILE *fp;
@@ -245,7 +344,8 @@ static void filed_handle_client(int fd) {
 
 		filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
-		sendfile_ret = sendfile(fd, fileinfo->fd, NULL, fileinfo->len);
+		sendfile_offset = 0;
+		sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, fileinfo->len);
 		if (sendfile_ret < 0 || ((size_t) sendfile_ret) != fileinfo->len) {
 			filed_log_msg("SEND_COMPLETE STATUS=ERROR IFD=... OFD=... BYTES=... BYTES_SENT=...");
 		} else {
@@ -339,6 +439,7 @@ static int filed_worker_threads_init(int fd, int thread_count) {
 int main(int argc, char **argv) {
 	int port = PORT, thread_count = THREAD_COUNT;
 	const char *bind_addr = BIND_ADDR;
+	int init_ret;
 	int fd;
 
 	/* Ignore */
@@ -357,7 +458,12 @@ int main(int argc, char **argv) {
 	/* XXX:TODO: Become a daemon */
 
 	/* Initialize */
-	filed_init();
+	init_ret = filed_init();
+	if (init_ret != 0) {
+		perror("filed_init");
+
+		return(3);
+	}
 
 	/* Create logging thread */
 	/* XXX:TODO: Check for errors */
