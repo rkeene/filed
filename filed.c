@@ -278,8 +278,6 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 
 	filed_log_msg("GOT_HEADERS FD=...");
 
-	fflush(fp);
-
 	/* We only handle the "GET" method */
 	if (strcasecmp(method, "get") != 0) {
 		return(NULL);
