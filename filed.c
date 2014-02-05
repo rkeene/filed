@@ -18,6 +18,7 @@
 #define PORT 8080
 #define THREAD_COUNT 10
 #define BIND_ADDR "::"
+#define CACHE_SIZE 8192
 
 /* Arguments for worker threads */
 struct filed_worker_thread_args {
@@ -37,7 +38,7 @@ struct filed_fileinfo {
 
 /* Global variables */
 struct filed_fileinfo *filed_fileinfo_fdcache;
-unsigned int filed_fileinfo_fdcache_size = 8192;
+unsigned int filed_fileinfo_fdcache_size = CACHE_SIZE;
 
 /* Initialize process */
 static int filed_init(void) {

@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Werror -W -pthread -O3
-LDFLAGS = -pthread
+LDFLAGS = -pthread -static
 LIBS = -lpthread
 
 filed: filed.o
