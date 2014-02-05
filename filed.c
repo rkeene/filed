@@ -462,7 +462,7 @@ int main(int argc, char **argv) {
 	int init_ret;
 	int fd;
 
-	/* Ignore */
+	/* XXX: TODO: Process arguments */
 	argc = argc;
 	argv = argv;
 
