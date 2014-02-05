@@ -14,7 +14,7 @@
 
 /* Default values */
 #define MAX_FAILURE_COUNT 30
-#define PORT 8080
+#define PORT 8081
 #define THREAD_COUNT 10
 #define BIND_ADDR "::"
 
@@ -102,13 +102,19 @@ static int filed_listen(const char *address, unsigned int port) {
 	return(fd);
 }
 
+/* Log a message */
+#define FILED_DONT_LOG
+#ifdef FILED_DONT_LOG
+#  define filed_logging_thread_init() 0
+#  define filed_log_msg_debug(x, ...) /**/
+#  define filed_log_msg(x) /**/
+#else
 /* Initialize logging thread */
 static int filed_logging_thread_init(void) {
 	/* XXX:TODO: Unimplemented */
 	return(0);
 }
 
-/* Log a message */
 #define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
 static void filed_log_msg(const char *buffer) {
 	/* XXX:TODO: Unimplemented */
@@ -117,6 +123,7 @@ static void filed_log_msg(const char *buffer) {
 	return;
 }
 
+#endif
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
 	struct tm timeinfo_tm, *timeinfo_tm_p;
@@ -296,6 +303,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 static void filed_handle_client(int fd) {
 	struct filed_fileinfo *fileinfo, fileinfo_b;
 	ssize_t sendfile_ret;
+	size_t sendfile_len;
 	off_t sendfile_offset;
 	char *path, path_b[1010];
 	char *date_current, date_current_b[64];
@@ -345,12 +353,20 @@ static void filed_handle_client(int fd) {
 		filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
 		sendfile_offset = 0;
-		sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, fileinfo->len);
-		if (sendfile_ret < 0 || ((size_t) sendfile_ret) != fileinfo->len) {
-			filed_log_msg("SEND_COMPLETE STATUS=ERROR IFD=... OFD=... BYTES=... BYTES_SENT=...");
-		} else {
-			filed_log_msg("SEND_COMPLETE STATUS=OK IFD=... OFD=... BYTES=...");
+		sendfile_len = fileinfo->len;
+		while (1) {
+			sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
+			if (sendfile_ret <= 0) {
+				break;
+			}
+
+			sendfile_len -= sendfile_ret;
+			if (sendfile_len == 0) {
+				break;
+			}
 		}
+
+		filed_log_msg("SEND_COMPLETE STATUS=... IFD=... OFD=... BYTES=... BYTES_SENT=...");
 
 		close(fileinfo->fd);
 
@@ -466,12 +482,20 @@ int main(int argc, char **argv) {
 	}
 
 	/* Create logging thread */
-	/* XXX:TODO: Check for errors */
-	filed_logging_thread_init();
+	init_ret = filed_logging_thread_init();
+	if (init_ret != 0) {
+		perror("filed_logging_thread_init");
+
+		return(4);
+	}
 
 	/* Create worker threads */
-	/* XXX:TODO: Check for errors */
-	filed_worker_threads_init(fd, thread_count);
+	init_ret = filed_worker_threads_init(fd, thread_count);
+	if (init_ret != 0) {
+		perror("filed_worker_threads_init");
+
+		return(4);
+	}
 
 	/* Wait for threads to exit */
 	/* XXX:TODO: Monitor thread usage */
