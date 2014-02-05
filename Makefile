@@ -4,6 +4,8 @@ LDFLAGS = -pthread
 LIBS = -lpthread
 
 filed: filed.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(LIBS)
+
 filed.o: filed.c
 
 clean:
