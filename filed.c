@@ -204,7 +204,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->path = strdup(path);
 
 		/* XXX:TODO: Determine */
-		cache->type = "text/plain";
+		cache->type = "application/octet-stream";
 		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
 	} else {
 		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);
@@ -287,7 +287,7 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 
 /* Return an error page */
 static void filed_error_page(FILE *fp, const char *date_current, int error_number) {
-	char *error_string = "ERROR";
+	char *error_string = "<html><head><title>ERROR</title></head><body>Unable to process request</body></html>";
 
 	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s",
 		error_number,
@@ -426,7 +426,9 @@ static void *filed_worker_thread(void *arg_v) {
 		filed_handle_client(fd);
 	}
 
-	/* XXX:TODO: Report error */
+	/* Report error */
+	filed_log_msg("THREAD_DIED ABNORMAL");
+
 	return(NULL);
 }
 
