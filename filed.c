@@ -12,6 +12,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <errno.h>
 #include <time.h>
 
 /* Default values */
@@ -467,6 +468,21 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 			filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=20X");
 
+#ifdef FILED_NONBLOCK_HTTP
+			int socket_flags;
+			fd_set rfd, wfd;
+			char sinkbuf[8192];
+			ssize_t read_ret;
+
+			FD_ZERO(&rfd);
+			FD_ZERO(&wfd);
+			FD_SET(fd, &rfd);
+			FD_SET(fd, &wfd);
+
+			socket_flags = fcntl(fd, F_GETFL);
+			fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK);
+#endif
+
 			filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
 			sendfile_offset = request->headers.range.offset;
@@ -475,7 +491,36 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			while (1) {
 				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
 				if (sendfile_ret <= 0) {
+#ifdef FILED_NONBLOCK_HTTP
+					if (errno == EAGAIN) {
+						sendfile_ret = 0;
+
+						while (1) {
+							select(fd + 1, &rfd, &wfd, NULL, NULL);
+							if (FD_ISSET(fd, &rfd)) {
+								read_ret = read(fd, sinkbuf, sizeof(sinkbuf));
+
+								if (read_ret <= 0) {
+									break;
+								}
+							}
+
+							if (FD_ISSET(fd, &wfd)) {
+								read_ret = 1;
+
+								break;
+							}
+						}
+
+						if (read_ret <= 0) {
+							break;
+						}
+					} else {
+						break;
+					}
+#else
 					break;
+#endif
 				}
 
 				sendfile_len -= sendfile_ret;
