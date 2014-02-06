@@ -25,7 +25,7 @@
 #define PORT 80
 #define THREAD_COUNT 5
 #define BIND_ADDR "::"
-#define CACHE_SIZE 8193
+#define CACHE_SIZE 8209
 
 /* Arguments for worker threads */
 struct filed_worker_thread_args {
@@ -680,12 +680,55 @@ static int filed_worker_threads_init(int fd, int thread_count) {
 }
 
 /* Display help */
-static void filed_print_help(FILE *output, const char *extra) {
+static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	if (extra) {
 		fprintf(output, "%s\n", extra);
 	}
 
 	fprintf(output, "Usage: filed [<options>]\n");
+	fprintf(output, "  Options:\n");
+	fprintf(output, "      -h, --help\n");
+	fprintf(output, "      -b <address>, --bind <address>\n");
+	fprintf(output, "      -p <port>, --port <port>\n");
+	fprintf(output, "      -t <count>, --threads <count>\n");
+	fprintf(output, "      -c <entries>, --cache <entries>\n");
+	fprintf(output, "      -u <user>, --user <user>\n");
+	fprintf(output, "      -r <directory>, --root <directory>\n");
+
+	if (long_help) {
+		fprintf(output, "\n");
+		fprintf(output, "  Usage:\n");
+		fprintf(output, "      -h (or --help) prints this usage information\n");
+		fprintf(output, "\n");
+		fprintf(output, "      -b (or --bind) specifies the address to listen for incoming HTTP\n");
+		fprintf(output, "                     requests on.  The default value is \"%s\".\n", BIND_ADDR);
+		fprintf(output, "\n");
+		fprintf(output, "      -p (or --port) specifies the TCP port number to listen for incoming HTTP\n");
+		fprintf(output, "                     requests on.  The default is %u.\n", (unsigned int) PORT);
+		fprintf(output, "\n");
+		fprintf(output, "      -t (or --threads) specifies the number of worker threads to create. Each\n");
+		fprintf(output, "                        worker thread can service one concurrent HTTP session.\n");
+		fprintf(output, "                        Thus the number of threads created will determine how\n");
+		fprintf(output, "                        many simultaneous transfers will be possible. The\n");
+		fprintf(output, "                        default is %lu.\n", (unsigned long) THREAD_COUNT);
+		fprintf(output, "\n");
+		fprintf(output, "      -c (or --cache) specifies the number of file information cache entries\n");
+		fprintf(output, "                      to allocate.  Each cache entry holds file information as\n");
+		fprintf(output, "                      well as an open file descriptor to the file, so resource\n");
+		fprintf(output, "                      limits (i.e., ulimit) should be considered.  This should\n");
+		fprintf(output, "                      be a prime number for ideal use with the lookup method.\n");
+		fprintf(output, "                      The default is %lu.\n", (unsigned long) CACHE_SIZE);
+		fprintf(output, "\n");
+		fprintf(output, "      -u (or --user) specifies the user to switch user IDs to before servicing\n");
+		fprintf(output, "                     requests.  The default is not change user IDs.\n");
+		fprintf(output, "\n");
+		fprintf(output, "      -r (or --root) specifies the directory to act as the root directory for\n");
+		fprintf(output, "                     the file server.  If this option is specified, chroot(2)\n");
+		fprintf(output, "                     is called.  The default is not change root directories,\n");
+		fprintf(output, "                     that is, the \"/\" directory is shared out.  This will\n");
+		fprintf(output, "                     likely be a security issue, so this option should always\n");
+		fprintf(output, "                     be used.\n");
+	}
 
 	return;
 }
@@ -753,7 +796,7 @@ int main(int argc, char **argv) {
 				setuid_enabled = 1;
 				lookup_ret = filed_user_lookup(optarg, &user);
 				if (lookup_ret != 0) {
-					filed_print_help(stderr, "Invalid username specified");
+					filed_print_help(stderr, 0, "Invalid username specified");
 
 					return(1);
 				}
@@ -763,11 +806,11 @@ int main(int argc, char **argv) {
 				break;
 			case '?':
 			case ':':
-				filed_print_help(stderr, NULL);
+				filed_print_help(stderr, 0, NULL);
 
 				return(1);
 			case 'h':
-				filed_print_help(stdout, NULL);
+				filed_print_help(stdout, 1, NULL);
 
 				return(0);
 		}
