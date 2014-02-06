@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include <strings.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -45,8 +46,14 @@ struct filed_http_request {
 
 	/** HTTP Request information **/
 	char *path;     /*** Path being requested ***/
-	off_t offset;   /*** Range start ***/
-	ssize_t length; /*** Range length ***/
+
+	struct {
+		struct {
+			int present;
+			off_t offset;   /*** Range start ***/
+			ssize_t length; /*** Range length ***/
+		} range;
+	} headers;
 };
 
 /* Global variables */
@@ -76,6 +83,8 @@ static int filed_init(void) {
 		filed_fileinfo_fdcache[idx].lastmod = "";
 		filed_fileinfo_fdcache[idx].type = "";
 	}
+
+	signal(SIGPIPE, SIG_IGN);
 
 	return(0);
 }
@@ -221,7 +230,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->path = strdup(path);
 
 		/* XXX:TODO: Determine */
-		cache->type = "application/octet-stream";
+		cache->type = "video/mp4";
 		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
 	} else {
 		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);
@@ -256,10 +265,12 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	size_t buffer_len, tmpbuffer_len;
 	off_t range_start, range_end;
 	ssize_t range_length;
+	int range_request;
 	int i;
 
 	range_start = 0;
 	range_end   = 0;
+	range_request = 0;
 	range_length = -1;
 
 	buffer = buffer_st->path_b;
@@ -305,7 +316,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 			if (strncasecmp(workbuffer, "bytes=", 6) == 0) {
 				workbuffer += 6;
 
-				range_start = strtoul(workbuffer, &workbuffer_next, 10);
+				range_request = 1;
+
+				range_start = strtoull(workbuffer, &workbuffer_next, 10);
 
 				workbuffer = workbuffer_next;
 
@@ -313,7 +326,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 					workbuffer++;
 
 					if (*workbuffer != '\r' && *workbuffer != '\n') {
-						range_end = strtoul(workbuffer, &workbuffer_next, 10);
+						range_end = strtoull(workbuffer, &workbuffer_next, 10);
 					}
 				}
 			}
@@ -342,8 +355,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 
 	/* Fill up structure to return */
 	buffer_st->path   = path;
-	buffer_st->offset = range_start;
-	buffer_st->length = range_length;
+	buffer_st->headers.range.present = range_request;
+	buffer_st->headers.range.offset  = range_start;
+	buffer_st->headers.range.length  = range_length;
 
 	return(buffer_st);
 }
@@ -386,6 +400,8 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 	request = filed_get_http_request(fp, request);
 
+	fflush(fp);
+
 	path = request->path;
 
 	filed_log_msg("PROCESS_REPLY_START FD=... PATH=... RANGE_START=... RANGE_LENGTH=...");
@@ -408,43 +424,54 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=404");
 	} else {
-		if (request->offset != 0 || request->length >= 0) {
-			if ((size_t) request->offset >= fileinfo->len) {
+		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
+			if ((size_t) request->headers.range.offset >= fileinfo->len) {
 				filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=416");
 
 				filed_error_page(fp, date_current, 416);
+			} else {
+				if (request->headers.range.length < 0) {
+					request->headers.range.length = fileinfo->len - request->headers.range.offset;
+				}
+
+				filed_log_msg_debug("Partial request, starting at: %llu and running for %llu bytes", (unsigned long long) request->headers.range.offset, (unsigned long long) request->headers.range.length);
+
+				http_code = 206;
 			}
-
-			if (request->length < 0) {
-				request->length = fileinfo->len - request->offset;
-			}
-
-			filed_log_msg_debug("Partial request, starting at: %lu and running for %lu bytes", (unsigned long) request->offset, (unsigned long) request->length);
-
-			http_code = 216;
 		} else {
-			http_code = 200;
-			request->offset = 0;
-			request->length = fileinfo->len;
+			if (request->headers.range.present) {
+				http_code = 206;
+			} else {
+				http_code = 200;
+			}
+			request->headers.range.offset = 0;
+			request->headers.range.length = fileinfo->len;
 		}
 
 		if (http_code > 0) {
-			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Range: %llu-%llu/%llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
+			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\n",
 				http_code,
 				date_current,
 				fileinfo->lastmod,
-				(unsigned long long) request->length,
-				(unsigned long long) request->offset, (unsigned long long) (request->offset + request->length - 1), (unsigned long long) fileinfo->len,
+				(unsigned long long) request->headers.range.length,
 				fileinfo->type
 			);
+			if (http_code == 206) {
+				fprintf(fp, "Content-Range: %llu-%llu/%llu\r\n",
+					(unsigned long long) request->headers.range.offset,
+					(unsigned long long) (request->headers.range.offset + request->headers.range.length - 1),
+					(unsigned long long) fileinfo->len
+				);
+			}
+			fprintf(fp, "\r\n");
 			fflush(fp);
 
-			filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=200");
+			filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=20X");
 
 			filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
 
-			sendfile_offset = request->offset;
-			sendfile_len = request->length;
+			sendfile_offset = request->headers.range.offset;
+			sendfile_len = request->headers.range.length;
 			while (1) {
 				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
 				if (sendfile_ret <= 0) {
