@@ -456,7 +456,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				fileinfo->type
 			);
 			if (http_code == 206) {
-				fprintf(fp, "Content-Range: %llu-%llu/%llu\r\n",
+				fprintf(fp, "Content-Range: bytes %llu-%llu/%llu\r\n",
 					(unsigned long long) request->headers.range.offset,
 					(unsigned long long) (request->headers.range.offset + request->headers.range.length - 1),
 					(unsigned long long) fileinfo->len
