@@ -22,7 +22,7 @@
 #define MAX_FAILURE_COUNT 30
 
 /* Default values */
-#define PORT 8080
+#define PORT 80
 #define THREAD_COUNT 5
 #define BIND_ADDR "::"
 #define CACHE_SIZE 8193

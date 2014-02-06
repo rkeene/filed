@@ -1,0 +1,25 @@
+.PU
+.TH FILED 8 "06 Feb 14" "filed 1.0"
+.SH NAME
+filed \- serve files over HTTP
+.SH SYNOPSIS
+.ll +10
+.B filed
+.RB [ "\-h" ]
+.RB [ \-p\ port ]
+.RB [ \-t\ counts ]
+.RB [ \-c\ entries ]
+.ll -10
+.SH DESCRIPTION
+.I FILED
+serves files over HTTP as minimally as possible.  Only static files (i.e., files that never change or are replaced) are supported.
+
+.SH OPTIONS
+.TP
+.B \-p
+port
+
+.SH AUTHOR
+.Sp
+Roy Keene
+.I <filed@rkeene.org>
