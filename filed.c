@@ -57,6 +57,7 @@ struct filed_http_request {
 };
 
 /* Global variables */
+/** Open File cache **/
 struct filed_fileinfo *filed_fileinfo_fdcache;
 unsigned int filed_fileinfo_fdcache_size = CACHE_SIZE;
 
@@ -380,7 +381,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 static void filed_handle_client(int fd, struct filed_http_request *request) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
-	size_t sendfile_len;
+	size_t sendfile_len, sendfile_sent;
 	off_t sendfile_offset;
 	char *path;
 	char *date_current, date_current_b[64];
@@ -399,8 +400,6 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 	}
 
 	request = filed_get_http_request(fp, request);
-
-	fflush(fp);
 
 	path = request->path;
 
@@ -472,6 +471,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 			sendfile_offset = request->headers.range.offset;
 			sendfile_len = request->headers.range.length;
+			sendfile_sent = 0;
 			while (1) {
 				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
 				if (sendfile_ret <= 0) {
@@ -479,6 +479,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				}
 
 				sendfile_len -= sendfile_ret;
+				sendfile_sent += sendfile_ret;
 				if (sendfile_len == 0) {
 					break;
 				}
