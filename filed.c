@@ -36,6 +36,19 @@ struct filed_fileinfo {
 	char *type;
 };
 
+/* Request variables */
+struct filed_http_request {
+	/** Buffers **/
+	struct filed_fileinfo fileinfo;
+	char path_b[1010];
+	char tmpbuf[1010];
+
+	/** HTTP Request information **/
+	char *path;     /*** Path being requested ***/
+	off_t offset;   /*** Range start ***/
+	ssize_t length; /*** Range length ***/
+};
+
 /* Global variables */
 struct filed_fileinfo *filed_fileinfo_fdcache;
 unsigned int filed_fileinfo_fdcache_size = CACHE_SIZE;
@@ -105,7 +118,7 @@ static int filed_listen(const char *address, unsigned int port) {
 }
 
 /* Log a message */
-#define FILED_DONT_LOG
+//#define FILED_DONT_LOG
 #ifdef FILED_DONT_LOG
 #  define filed_logging_thread_init() 0
 #  define filed_log_msg_debug(x, ...) /**/
@@ -237,10 +250,23 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 }
 
 /* Process an HTTP request and return the path requested */
-static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
+static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_http_request *buffer_st) {
 	char *method, *path;
-	char tmpbuf[1010];
+	char *buffer, *tmpbuffer, *workbuffer, *workbuffer_next;
+	size_t buffer_len, tmpbuffer_len;
+	off_t range_start, range_end;
+	ssize_t range_length;
 	int i;
+
+	range_start = 0;
+	range_end   = 0;
+	range_length = -1;
+
+	buffer = buffer_st->path_b;
+	buffer_len = sizeof(buffer_st->path_b);
+
+	tmpbuffer = buffer_st->tmpbuf;
+	tmpbuffer_len = sizeof(buffer_st->tmpbuf);
 
 	filed_log_msg("WAIT_FOR_REQUEST FD=...");
 
@@ -271,8 +297,29 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 	filed_log_msg("WAIT_FOR_HEADERS FD=...");
 
 	for (i = 0; i < 100; i++) {
-		fgets(tmpbuf, sizeof(tmpbuf), fp);
-		if (memcmp(tmpbuf, "\r\n", 2) == 0) {
+		fgets(tmpbuffer, tmpbuffer_len, fp);
+
+		if (strncasecmp(tmpbuffer, "Range: ", 7) == 0) {
+			workbuffer = tmpbuffer + 7;
+
+			if (strncasecmp(workbuffer, "bytes=", 6) == 0) {
+				workbuffer += 6;
+
+				range_start = strtoul(workbuffer, &workbuffer_next, 10);
+
+				workbuffer = workbuffer_next;
+
+				if (*workbuffer == '-') {
+					workbuffer++;
+
+					if (*workbuffer != '\r' && *workbuffer != '\n') {
+						range_end = strtoul(workbuffer, &workbuffer_next, 10);
+					}
+				}
+			}
+		}
+
+		if (memcmp(tmpbuffer, "\r\n", 2) == 0) {
 			break;
 		}
 	}
@@ -284,7 +331,21 @@ static char *filed_get_http_request(FILE *fp, char *buffer, size_t buffer_len) {
 		return(NULL);
 	}
 
-	return(path);
+	/* Determine range */
+	if (range_end != 0) {
+		if (range_end <= range_start) {
+			return(NULL);
+		}
+
+		range_length = range_end - range_start;
+	}
+
+	/* Fill up structure to return */
+	buffer_st->path   = path;
+	buffer_st->offset = range_start;
+	buffer_st->length = range_length;
+
+	return(buffer_st);
 }
 
 /* Return an error page */
@@ -302,13 +363,14 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 }
 
 /* Handle a single request from a client */
-static void filed_handle_client(int fd) {
-	struct filed_fileinfo *fileinfo, fileinfo_b;
+static void filed_handle_client(int fd, struct filed_http_request *request) {
+	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
 	size_t sendfile_len;
 	off_t sendfile_offset;
-	char *path, path_b[1010];
+	char *path;
 	char *date_current, date_current_b[64];
+	int http_code;
 	FILE *fp;
 
 	/* Determine current time */
@@ -322,9 +384,11 @@ static void filed_handle_client(int fd) {
 		return;
 	}
 
-	path = filed_get_http_request(fp, path_b, sizeof(path_b));
+	request = filed_get_http_request(fp, request);
 
-	filed_log_msg("PROCESS_REPLY_START FD=... PATH=...");
+	path = request->path;
+
+	filed_log_msg("PROCESS_REPLY_START FD=... PATH=... RANGE_START=... RANGE_LENGTH=...");
 
 	if (path == NULL) {
 		filed_error_page(fp, date_current, 500);
@@ -336,39 +400,65 @@ static void filed_handle_client(int fd) {
 		return;
 	}
 
-	fileinfo = filed_open_file(path, &fileinfo_b);
+	http_code = -1;
+
+	fileinfo = filed_open_file(path, &request->fileinfo);
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404);
 
 		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=404");
 	} else {
-		fprintf(fp, "HTTP/1.1 200 OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
-			date_current,
-			fileinfo->lastmod,
-			(unsigned long long) fileinfo->len,
-			fileinfo->type
-		);
-		fflush(fp);
+		if (request->offset != 0 || request->length >= 0) {
+			if ((size_t) request->offset >= fileinfo->len) {
+				filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=416");
 
-		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=200");
-
-		filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
-
-		sendfile_offset = 0;
-		sendfile_len = fileinfo->len;
-		while (1) {
-			sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
-			if (sendfile_ret <= 0) {
-				break;
+				filed_error_page(fp, date_current, 416);
 			}
 
-			sendfile_len -= sendfile_ret;
-			if (sendfile_len == 0) {
-				break;
+			if (request->length < 0) {
+				request->length = fileinfo->len - request->offset;
 			}
+
+			filed_log_msg_debug("Partial request, starting at: %lu and running for %lu bytes", (unsigned long) request->offset, (unsigned long) request->length);
+
+			http_code = 216;
+		} else {
+			http_code = 200;
+			request->offset = 0;
+			request->length = fileinfo->len;
 		}
 
-		filed_log_msg("SEND_COMPLETE STATUS=... IFD=... OFD=... BYTES=... BYTES_SENT=...");
+		if (http_code > 0) {
+			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Range: %llu-%llu/%llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
+				http_code,
+				date_current,
+				fileinfo->lastmod,
+				(unsigned long long) request->length,
+				(unsigned long long) request->offset, (unsigned long long) (request->offset + request->length - 1), (unsigned long long) fileinfo->len,
+				fileinfo->type
+			);
+			fflush(fp);
+
+			filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=200");
+
+			filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
+
+			sendfile_offset = request->offset;
+			sendfile_len = request->length;
+			while (1) {
+				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
+				if (sendfile_ret <= 0) {
+					break;
+				}
+
+				sendfile_len -= sendfile_ret;
+				if (sendfile_len == 0) {
+					break;
+				}
+			}
+
+			filed_log_msg("SEND_COMPLETE STATUS=... IFD=... OFD=... BYTES=... BYTES_SENT=...");
+		}
 
 		close(fileinfo->fd);
 
@@ -385,6 +475,7 @@ static void filed_handle_client(int fd) {
 /* Handle incoming connections */
 static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
+	struct filed_http_request request;
 	struct sockaddr_in6 addr;
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = MAX_FAILURE_COUNT;
@@ -425,7 +516,7 @@ static void *filed_worker_thread(void *arg_v) {
 		failure_count = 0;
 
 		/* Handle socket */
-		filed_handle_client(fd);
+		filed_handle_client(fd, &request);
 	}
 
 	/* Report error */
