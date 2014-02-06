@@ -356,6 +356,12 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		}
 
 		range_length = range_end - range_start;
+
+		filed_log_msg_debug("Computing length parameter: %llu = %llu - %llu",
+			(unsigned long long) range_length,
+			(unsigned long long) range_end,
+			(unsigned long long) range_start
+		);
 	}
 
 	/* Fill up structure to return */
@@ -434,6 +440,11 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				filed_error_page(fp, date_current, 416);
 			} else {
 				if (request->headers.range.length < 0) {
+					filed_log_msg_debug("Computing length to fit in bounds: fileinfo->len = %llu, request->headers.range.offset = %llu",
+						(unsigned long long) fileinfo->len,
+						(unsigned long long) request->headers.range.offset
+					);
+
 					request->headers.range.length = fileinfo->len - request->headers.range.offset;
 				}
 
