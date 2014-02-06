@@ -10,20 +10,22 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
 #include <time.h>
+#include <pwd.h>
 
 /* Compile time constants */
 #define FILED_SENDFILE_MAX 16777215
+#define MAX_FAILURE_COUNT 30
 
 /* Default values */
-#define MAX_FAILURE_COUNT 30
 #define PORT 8080
-#define THREAD_COUNT 10
+#define THREAD_COUNT 5
 #define BIND_ADDR "::"
-#define CACHE_SIZE 8192
+#define CACHE_SIZE 8193
 
 /* Arguments for worker threads */
 struct filed_worker_thread_args {
@@ -62,21 +64,27 @@ struct filed_http_request {
 
 /* Global variables */
 /** Open File cache **/
-struct filed_fileinfo *filed_fileinfo_fdcache;
-unsigned int filed_fileinfo_fdcache_size = CACHE_SIZE;
+struct filed_fileinfo *filed_fileinfo_fdcache = NULL;
+unsigned int filed_fileinfo_fdcache_size = 0;
 
-/* Initialize process */
-static int filed_init(void) {
+/* Initialize cache */
+static int filed_init_cache(unsigned int cache_size) {
 	unsigned int idx;
 	int mutex_init_ret;
 
-	mlockall(MCL_CURRENT | MCL_FUTURE);
+	/* Cache may not be re-initialized */
+	if (filed_fileinfo_fdcache_size != 0 || filed_fileinfo_fdcache != NULL) {
+		return(1);
+	}
 
+	/* Allocate cache */
+	filed_fileinfo_fdcache_size = cache_size;
 	filed_fileinfo_fdcache = malloc(sizeof(*filed_fileinfo_fdcache) * filed_fileinfo_fdcache_size);
 	if (filed_fileinfo_fdcache == NULL) {
 		return(1);
 	}
 
+	/* Initialize cache entries */
 	for (idx = 0; idx < filed_fileinfo_fdcache_size; idx++) {
 		mutex_init_ret = pthread_mutex_init(&filed_fileinfo_fdcache[idx].mutex, NULL);
 		if (mutex_init_ret != 0) {
@@ -89,7 +97,28 @@ static int filed_init(void) {
 		filed_fileinfo_fdcache[idx].type = "";
 	}
 
+	return(0);
+}
+
+/* Initialize process */
+static int filed_init(unsigned int cache_size) {
+	static int called = 0;
+	int cache_ret;
+
+	if (called) {
+		return(0);
+	}
+
+	called = 1;
+
+	mlockall(MCL_CURRENT | MCL_FUTURE);
+
 	signal(SIGPIPE, SIG_IGN);
+
+	cache_ret = filed_init_cache(cache_size);
+	if (cache_ret != 0) {
+		return(cache_ret);
+	}
 
 	return(0);
 }
@@ -153,8 +182,8 @@ static void filed_log_msg(const char *buffer) {
 
 	return;
 }
-
 #endif
+
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
 	struct tm timeinfo_tm, *timeinfo_tm_p;
@@ -171,11 +200,14 @@ static char *filed_format_time(char *buffer, size_t buffer_len, const time_t tim
 }
 
 /* hash */
+/* XXX:TODO: Rewrite this */
 static unsigned int filed_hash(const unsigned char *value, unsigned int modulus) {
-	unsigned char curr;
+	unsigned char curr, prev;
+	int diff;
 	unsigned int retval;
 
 	retval = modulus - 1;
+	prev = modulus % 255;
 
 	while ((curr = *value)) {
 		if (curr < 32) {
@@ -184,8 +216,14 @@ static unsigned int filed_hash(const unsigned char *value, unsigned int modulus)
 			curr -= 32;
 		}
 
-		retval <<= 5;
-		retval += curr;
+		if (prev < curr) {
+			diff = curr - prev;
+		} else {
+			diff = prev - curr;
+		}
+
+		retval <<= 3;
+		retval ^= diff;
 
 		value++;
 	}
@@ -641,16 +679,99 @@ static int filed_worker_threads_init(int fd, int thread_count) {
 	return(0);
 }
 
+/* Display help */
+static void filed_print_help(FILE *output, const char *extra) {
+	if (extra) {
+		fprintf(output, "%s\n", extra);
+	}
+
+	fprintf(output, "Usage: filed [<options>]\n");
+
+	return;
+}
+
+/* Add a getopt option */
+static void filed_getopt_long_setopt(struct option *opt, const char *name, int has_arg, int val) {
+	opt->name     = name;
+	opt->has_arg  = has_arg;
+	opt->flag     = NULL;
+	opt->val      = val;
+
+	return;
+}
+
+/* Resolve a username to a UID */
+static int filed_user_lookup(const char *user, uid_t *user_id) {
+	struct passwd *ent;
+
+	ent = getpwnam(user);
+	if (ent == NULL) {
+		return(1);
+	}
+
+	*user_id = ent->pw_uid;
+
+	return(0);
+}
+
 /* Run process */
 int main(int argc, char **argv) {
+	struct option options[8];
+	const char *bind_addr = BIND_ADDR, *newroot = NULL;
+	uid_t user = 0;
 	int port = PORT, thread_count = THREAD_COUNT;
-	const char *bind_addr = BIND_ADDR;
-	int init_ret;
+	int cache_size = CACHE_SIZE;
+	int init_ret, chroot_ret, setuid_ret, lookup_ret, chdir_ret;
+	int setuid_enabled = 0;
+	int ch;
 	int fd;
 
-	/* XXX: TODO: Process arguments */
-	argc = argc;
-	argv = argv;
+	/* Process arguments */
+	filed_getopt_long_setopt(&options[0], "port", required_argument, 'p');
+	filed_getopt_long_setopt(&options[1], "threads", required_argument, 't');
+	filed_getopt_long_setopt(&options[2], "cache", required_argument, 'c');
+	filed_getopt_long_setopt(&options[3], "bind", required_argument, 'b');
+	filed_getopt_long_setopt(&options[4], "user", required_argument, 'u');
+	filed_getopt_long_setopt(&options[5], "root", required_argument, 'r');
+	filed_getopt_long_setopt(&options[6], "help", no_argument, 'h');
+	filed_getopt_long_setopt(&options[7], NULL, 0, 0);
+	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:h", options, NULL)) != -1) {
+		switch(ch) {
+			case 'p':
+				port = atoi(optarg);
+				break;
+			case 't':
+				thread_count = atoi(optarg);
+				break;
+			case 'c':
+				cache_size = atoi(optarg);
+				break;
+			case 'b':
+				bind_addr = strdup(optarg);
+				break;
+			case 'u':
+				setuid_enabled = 1;
+				lookup_ret = filed_user_lookup(optarg, &user);
+				if (lookup_ret != 0) {
+					filed_print_help(stderr, "Invalid username specified");
+
+					return(1);
+				}
+				break;
+			case 'r':
+				newroot = strdup(optarg);
+				break;
+			case '?':
+			case ':':
+				filed_print_help(stderr, NULL);
+
+				return(1);
+			case 'h':
+				filed_print_help(stdout, NULL);
+
+				return(0);
+		}
+	}
 
 	/* Create listening socket */
 	fd = filed_listen(bind_addr, port);
@@ -660,11 +781,38 @@ int main(int argc, char **argv) {
 		return(1);
 	}
 
+	/* Chroot, if appropriate */
+	if (newroot) {
+		chdir_ret = chdir(newroot);
+		if (chdir_ret != 0) {
+			perror("chdir");
+
+			return(1);
+		}
+
+		chroot_ret = chroot(".");
+		if (chroot_ret != 0) {
+			perror("chroot");
+
+			return(1);
+		}
+	}
+
+	/* Drop privileges, if appropriate */
+	if (setuid_enabled) {
+		setuid_ret = setuid(user);
+		if (setuid_ret != 0) {
+			perror("setuid");
+
+			return(1);
+		}
+	}
+
 	/* Become a daemon */
 	/* XXX:TODO: Become a daemon */
 
 	/* Initialize */
-	init_ret = filed_init();
+	init_ret = filed_init(cache_size);
 	if (init_ret != 0) {
 		perror("filed_init");
 
