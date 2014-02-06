@@ -35,7 +35,7 @@ struct filed_fileinfo {
 	pthread_mutex_t mutex;
 	char *path;
 	int fd;
-	size_t len;
+	off_t len;
 	char *lastmod;
 	char lastmod_b[64];
 	char *type;
@@ -55,7 +55,7 @@ struct filed_http_request {
 		struct {
 			int present;
 			off_t offset;   /*** Range start ***/
-			ssize_t length; /*** Range length ***/
+			off_t length;   /*** Range length ***/
 		} range;
 	} headers;
 };
@@ -268,8 +268,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	char *method, *path;
 	char *buffer, *tmpbuffer, *workbuffer, *workbuffer_next;
 	size_t buffer_len, tmpbuffer_len;
-	off_t range_start, range_end;
-	ssize_t range_length;
+	off_t range_start, range_end, range_length;
 	int range_request;
 	int i;
 
@@ -434,7 +433,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=404");
 	} else {
 		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
-			if ((size_t) request->headers.range.offset >= fileinfo->len) {
+			if (request->headers.range.offset >= fileinfo->len) {
 				filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=416");
 
 				filed_error_page(fp, date_current, 416);
@@ -448,7 +447,10 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 					request->headers.range.length = fileinfo->len - request->headers.range.offset;
 				}
 
-				filed_log_msg_debug("Partial request, starting at: %llu and running for %llu bytes", (unsigned long long) request->headers.range.offset, (unsigned long long) request->headers.range.length);
+				filed_log_msg_debug("Partial request, starting at: %llu and running for %llu bytes",
+					(unsigned long long) request->headers.range.offset,
+					(unsigned long long) request->headers.range.length
+				);
 
 				http_code = 206;
 			}
