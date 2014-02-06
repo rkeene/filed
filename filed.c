@@ -15,6 +15,9 @@
 #include <errno.h>
 #include <time.h>
 
+/* Compile time constants */
+#define FILED_SENDFILE_MAX 16777215
+
 /* Default values */
 #define MAX_FAILURE_COUNT 30
 #define PORT 8080
@@ -382,7 +385,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 static void filed_handle_client(int fd, struct filed_http_request *request) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
-	size_t sendfile_len, sendfile_sent;
+	size_t sendfile_len, sendfile_sent, sendfile_size;
 	off_t sendfile_offset;
 	char *path;
 	char *date_current, date_current_b[64];
@@ -402,11 +405,9 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 	request = filed_get_http_request(fp, request);
 
-	path = request->path;
-
 	filed_log_msg("PROCESS_REPLY_START FD=... PATH=... RANGE_START=... RANGE_LENGTH=...");
 
-	if (path == NULL) {
+	if (request == NULL || request->path == NULL) {
 		filed_error_page(fp, date_current, 500);
 
 		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=500");
@@ -415,6 +416,8 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 		return;
 	}
+
+	path = request->path;
 
 	http_code = -1;
 
@@ -489,7 +492,13 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			sendfile_len = request->headers.range.length;
 			sendfile_sent = 0;
 			while (1) {
-				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_len);
+				if (sendfile_len > FILED_SENDFILE_MAX) {
+					sendfile_size = FILED_SENDFILE_MAX;
+				} else {
+					sendfile_size = sendfile_len;
+				}
+
+				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_size);
 				if (sendfile_ret <= 0) {
 #ifdef FILED_NONBLOCK_HTTP
 					if (errno == EAGAIN) {
