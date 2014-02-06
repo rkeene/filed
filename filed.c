@@ -212,7 +212,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
-		fd = open(path, O_RDONLY);
+		fd = open(path, O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
 			pthread_mutex_unlock(&cache->mutex);
 
