@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <getopt.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
@@ -178,8 +179,16 @@ static int filed_logging_thread_init(void) {
 /* XXX:TODO: Unimplemented */
 #define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
 
-static void filed_log_msg(const char *buffer) {
-	/* XXX:TODO: Unimplemented */
+static void filed_log_msg(const char *fmt, ...) {
+	char buffer[1010];
+	va_list args;
+
+	va_start(args, fmt);
+
+	vsnprintf(buffer, sizeof(buffer), fmt, args);
+
+	va_end(args);
+
 	fprintf(stderr, "%s\n", buffer);
 
 	return;
@@ -334,7 +343,10 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	size_t buffer_len, tmpbuffer_len;
 	off_t range_start, range_end, range_length;
 	int range_request;
+	int fd;
 	int i;
+
+	fd = fileno(fp);
 
 	range_start = 0;
 	range_end   = 0;
@@ -347,7 +359,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	tmpbuffer = buffer_st->tmpbuf;
 	tmpbuffer_len = sizeof(buffer_st->tmpbuf);
 
-	filed_log_msg("WAIT_FOR_REQUEST FD=...");
+	filed_log_msg("WAIT_FOR_REQUEST FD=%i", fd);
 
 	fgets(buffer, buffer_len, fp);
 
@@ -355,7 +367,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 
 	buffer = strchr(buffer, ' ');
 	if (buffer == NULL) {
-		filed_log_msg("GOT_REQUEST FD=... ERROR=format");
+		filed_log_msg("GOT_REQUEST FD=%i ERROR=format", fd);
 
 		return(NULL);
 	}
@@ -371,9 +383,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		buffer++;
 	}
 
-	filed_log_msg("GOT_REQUEST FD=... PATH=...");
+	filed_log_msg("GOT_REQUEST FD=%i PATH=%s", fd, path);
 
-	filed_log_msg("WAIT_FOR_HEADERS FD=...");
+	filed_log_msg("WAIT_FOR_HEADERS FD=%i", fd);
 
 	for (i = 0; i < 100; i++) {
 		fgets(tmpbuffer, tmpbuffer_len, fp);
@@ -405,7 +417,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		}
 	}
 
-	filed_log_msg("GOT_HEADERS FD=...");
+	filed_log_msg("GOT_HEADERS FD=%i", fd);
 
 	/* We only handle the "GET" method */
 	if (strcasecmp(method, "get") != 0) {
@@ -474,16 +486,25 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 	request = filed_get_http_request(fp, request);
 
-	filed_log_msg("PROCESS_REPLY_START FD=... PATH=... RANGE_START=... RANGE_LENGTH=...");
-
 	if (request == NULL || request->path == NULL) {
 		filed_error_page(fp, date_current, 500);
 
-		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=500");
+		filed_log_msg("INVALID_REQUEST FD=%i ERROR=500", fd);
 
 		fclose(fp);
 
 		return;
+	}
+
+	if (request->headers.range.present) {
+		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s RANGE_START=%llu RANGE_LENGTH=%llu",
+			fd,
+			request->path,
+			(unsigned long long) request->headers.range.offset,
+			(unsigned long long) request->headers.range.length
+		);
+	} else {
+		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s", fd, request->path);
 	}
 
 	path = request->path;
@@ -494,11 +515,11 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404);
 
-		filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=404");
+		filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i ERROR=404", fd);
 	} else {
 		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
 			if (request->headers.range.offset >= fileinfo->len) {
-				filed_log_msg("PROCESS_REPLY_COMPLETE FD=... ERROR=416");
+				filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i ERROR=416", fd);
 
 				filed_error_page(fp, date_current, 416);
 			} else {
@@ -546,7 +567,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			fprintf(fp, "\r\n");
 			fflush(fp);
 
-			filed_log_msg("PROCESS_REPLY_COMPLETE FD=... STATUS=20X");
+			filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i STATUS=%i", fd, http_code);
 
 #ifdef FILED_NONBLOCK_HTTP
 			int socket_flags;
@@ -563,7 +584,12 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK);
 #endif
 
-			filed_log_msg("SEND_START IFD=... OFD=... BYTES=...");
+			filed_log_msg("SEND_START FILE_FD=%i FD=%i BYTES=%llu OFFSET=%llu",
+				fileinfo->fd,
+				fd,
+				(unsigned long long) request->headers.range.length,
+				(unsigned long long) request->headers.range.offset
+			);
 
 			sendfile_offset = request->headers.range.offset;
 			sendfile_len = request->headers.range.length;
@@ -616,15 +642,21 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				}
 			}
 
-			filed_log_msg("SEND_COMPLETE STATUS=... IFD=... OFD=... BYTES=... BYTES_SENT=...");
+			filed_log_msg("SEND_COMPLETE STATUS=%s FILE_FD=%i FD=%i BYTES=%llu BYTES_SENT=%llu",
+				"<unknown>",
+				fileinfo->fd,
+				fd,
+				(unsigned long long) request->headers.range.length,
+				(unsigned long long) sendfile_sent
+			);
 		}
 
 		close(fileinfo->fd);
 
-		filed_log_msg("CLOSE_FILE FD=...");
+		filed_log_msg("CLOSE_FILE FD=%i", fd);
 	}
 
-	filed_log_msg("CLOSE_CONNECTION FD=...");
+	filed_log_msg("CLOSE_CONNECTION FD=%i", fd);
 
 	fclose(fp);
 
@@ -669,7 +701,7 @@ static void *filed_worker_thread(void *arg_v) {
 		}
 
 		/* Log the new connection */
-		filed_log_msg("NEW_CONNECTION SRC_ADDR=... SRC_PORT=... FD=...");
+		filed_log_msg("NEW_CONNECTION SRC_ADDR=... SRC_PORT=... FD=%i", fd);
 
 		/* Reset failure count*/
 		failure_count = 0;
