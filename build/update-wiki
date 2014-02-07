@@ -1,3 +1,3 @@
 #! /bin/bash
 
-man2html -r filed.1 | sed '0,/<BODY>/ d;/^This document was created by/,$ d;s@<A HREF="../index.html">Return to Main Contents</A>@@' | sed '$ d' | fossil wiki commit Manual
+man2html -r filed.1 | sed '0,/<BODY>/ d;/^This document was created by/,$ d;s@<A HREF="../index.html">Return to Main Contents</A>@@;s@\[@\&#91;@;s@\]@\&#93;@' | sed '$ d;/^ *$/ d' | fossil wiki commit Manual
