@@ -1,0 +1,81 @@
+#! /usr/bin/env tclsh
+
+set modulus 16777259
+
+proc filed_hash {str mod} {
+	set retval [expr {$mod - 1}]
+	set prev [expr {$mod % 255}]
+	for {set idx 0} {$idx < [string length $str]} {incr idx} {
+		set curr [string index $str $idx]
+		binary scan $curr H* curr
+		set curr [format %u 0x$curr]
+
+		if {$curr < 32} {
+			set curr [expr {255 - $curr}]
+		} else {
+			set curr [expr {$curr - 32}]
+		}
+
+		if {$prev < $curr} {
+			set diff [expr {$curr - $prev}]
+		} else {
+			set diff [expr {$prev - $curr}]
+		}
+
+		set prev $curr
+
+		set retval [expr {($retval << 3) & 0xffffffff}]
+		set retval [expr {$retval ^ $diff}]
+	}
+
+	set retval [expr {$retval % $mod}]
+
+	return $retval
+
+}
+
+set mimeinfofile "/etc/httpd/mime.types"
+
+set fd [open $mimeinfofile]
+set mimeinfo [read $fd]
+close $fd
+
+foreach line [split $mimeinfo "\n"] {
+	regsub {#.*} $line {} line
+	set line [string trim $line]
+
+	if {$line == ""} {
+		continue
+	}
+
+	set line [split $line]
+
+	set mime [lindex $line 0]
+	set extensions [lrange $line 1 end]
+
+	foreach extension $extensions {
+		if {$extension == ""} {
+			continue
+		}
+
+		set extensioninfo($extension) $mime
+	}
+}
+
+foreach extension [array names extensioninfo] {
+	set hash_id [filed_hash $extension $modulus]
+
+	lappend hashinfo($hash_id) $extension
+
+}
+puts "\tswitch (filed_hash((const unsigned char *) p, $modulus)) \{"
+foreach hash [lsort -integer -increasing [array names hashinfo]] {
+	puts "\t\tcase $hash:"
+	foreach extension $hashinfo($hash) {
+		puts "\t\t\tif (strcmp(p, \"$extension\") == 0) \{"
+		puts "\t\t\t\treturn(\"$extensioninfo($extension)\");"
+		puts "\t\t\t\}"
+	}
+	puts "\t\t\treturn(FILED_DEFAULT_TYPE);"
+}
+puts "\t\}"

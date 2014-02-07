@@ -21,6 +21,7 @@
 /* Compile time constants */
 #define FILED_SENDFILE_MAX 16777215
 #define MAX_FAILURE_COUNT 30
+#define FILED_DEFAULT_TYPE "application/octet-stream"
 
 /* Default values */
 #define PORT 80
@@ -41,7 +42,7 @@ struct filed_fileinfo {
 	off_t len;
 	char *lastmod;
 	char lastmod_b[64];
-	char *type;
+	const char *type;
 };
 
 /* Request variables */
@@ -223,7 +224,10 @@ static unsigned int filed_hash(const unsigned char *value, unsigned int modulus)
 			diff = prev - curr;
 		}
 
+		prev = curr;
+
 		retval <<= 3;
+		retval &= 0xFFFFFFFFLU;
 		retval ^= diff;
 
 		value++;
@@ -232,6 +236,27 @@ static unsigned int filed_hash(const unsigned char *value, unsigned int modulus)
 	retval = retval % modulus;
 
 	return(retval);
+}
+
+/* Find a mime-type based on the filename */
+static const char *filed_determine_mimetype(const char *path) {
+	const char *p;
+
+	p = strrchr(path, '.');
+	if (p == NULL) {
+		return(FILED_DEFAULT_TYPE);
+	}
+
+	p++;
+	if (*p == '\0') {
+		return(FILED_DEFAULT_TYPE);
+	}
+
+	filed_log_msg_debug("Looking up MIME type for %s (hash = %llu)", p, (unsigned long long) filed_hash((const unsigned char *) p, 16777259));
+
+#include "filed-mime-types.h"
+
+	return(FILED_DEFAULT_TYPE);
 }
 
 /* Open a file and return file information */
@@ -272,9 +297,9 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->fd = fd;
 		cache->len = len;
 		cache->path = strdup(path);
+		cache->type = filed_determine_mimetype(path);
 
 		/* XXX:TODO: Determine */
-		cache->type = "video/mp4";
 		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
 	} else {
 		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);

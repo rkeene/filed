@@ -13,7 +13,10 @@ all: filed
 filed: filed.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(LIBS)
 
-filed.o: filed.c
+filed.o: filed.c filed-mime-types.h
+
+filed-mime-types.h: generate-mime-types
+	./generate-mime-types > filed-mime-types.h
 
 install: filed filed.1
 	test -d "$(DESTDIR)$(mandir)/man1" || mkdir -p "$(DESTDIR)$(mandir)/man1"
@@ -26,4 +29,7 @@ clean:
 
 distclean: clean
 
-.PHONY: all install clean distclean
+mrproper: distclean
+	rm -f filed-mime-types.h
+
+.PHONY: all install clean distclean mrproper
