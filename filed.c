@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <pthread.h>
 #include <strings.h>
 #include <signal.h>
@@ -688,6 +689,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	fprintf(output, "Usage: filed [<options>]\n");
 	fprintf(output, "  Options:\n");
 	fprintf(output, "      -h, --help\n");
+	fprintf(output, "      -d, --daemon\n");
 	fprintf(output, "      -b <address>, --bind <address>\n");
 	fprintf(output, "      -p <port>, --port <port>\n");
 	fprintf(output, "      -t <count>, --threads <count>\n");
@@ -699,6 +701,9 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "\n");
 		fprintf(output, "  Usage:\n");
 		fprintf(output, "      -h (or --help) prints this usage information\n");
+		fprintf(output, "\n");
+		fprintf(output, "      -d (or --daemon) instructs filed to become a daemon after initializing\n");
+		fprintf(output, "                       the listening TCP socket and log files.\n");
 		fprintf(output, "\n");
 		fprintf(output, "      -b (or --bind) specifies the address to listen for incoming HTTP\n");
 		fprintf(output, "                     requests on.  The default value is \"%s\".\n", BIND_ADDR);
@@ -772,15 +777,77 @@ static int filed_user_lookup(const char *user, uid_t *user_id) {
 	return(0);
 }
 
+/* Daemonize */
+static int filed_daemonize(void) {
+	pid_t setsid_ret, fork_ret;
+	int chdir_ret, dup2_ret;
+	int fd_in, fd_out;
+
+	chdir_ret = chdir("/");
+	if (chdir_ret != 0) {
+		return(1);
+	}
+
+	fork_ret = fork();
+	if (fork_ret < 0) {
+		return(1);
+	}
+
+	if (fork_ret > 0) {
+		/* Parent */
+		waitpid(fork_ret, NULL, 0);
+
+		exit(EXIT_SUCCESS);
+	}
+
+	/* Child */
+	if (fork() != 0) {
+		/* Child */
+		exit(EXIT_SUCCESS);
+	}
+
+	/* Grand child */
+	setsid_ret = setsid();
+	if (setsid_ret == ((pid_t) -1)) {
+		return(1);
+	}
+
+	fd_in = open("/dev/null", O_RDONLY);
+	fd_out = open("/dev/null", O_WRONLY);
+	if (fd_in < 0 || fd_out < 0) {
+		return(1);
+	}
+
+	dup2_ret = dup2(fd_in, STDIN_FILENO);
+	if (dup2_ret != STDIN_FILENO) {
+		return(1);
+	}
+
+	dup2_ret = dup2(fd_out, STDOUT_FILENO);
+	if (dup2_ret != STDOUT_FILENO) {
+		return(1);
+	}
+
+	dup2_ret = dup2(fd_out, STDERR_FILENO);
+	if (dup2_ret != STDERR_FILENO) {
+		return(1);
+	}
+
+	close(fd_in);
+	close(fd_out);
+
+	return(0);
+}
+
 /* Run process */
 int main(int argc, char **argv) {
-	struct option options[8];
+	struct option options[9];
 	const char *bind_addr = BIND_ADDR, *newroot = NULL;
 	uid_t user = 0;
 	int port = PORT, thread_count = THREAD_COUNT;
 	int cache_size = CACHE_SIZE;
 	int init_ret, chroot_ret, setuid_ret, lookup_ret, chdir_ret;
-	int setuid_enabled = 0;
+	int setuid_enabled = 0, daemon_enabled = 0;
 	int ch;
 	int fd;
 
@@ -792,8 +859,9 @@ int main(int argc, char **argv) {
 	filed_getopt_long_setopt(&options[4], "user", required_argument, 'u');
 	filed_getopt_long_setopt(&options[5], "root", required_argument, 'r');
 	filed_getopt_long_setopt(&options[6], "help", no_argument, 'h');
-	filed_getopt_long_setopt(&options[7], NULL, 0, 0);
-	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:h", options, NULL)) != -1) {
+	filed_getopt_long_setopt(&options[7], "daemon", no_argument, 'd');
+	filed_getopt_long_setopt(&options[8], NULL, 0, 0);
+	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:hd", options, NULL)) != -1) {
 		switch(ch) {
 			case 'p':
 				port = atoi(optarg);
@@ -818,6 +886,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'r':
 				newroot = strdup(optarg);
+				break;
+			case 'd':
+				daemon_enabled = 1;
 				break;
 			case '?':
 			case ':':
@@ -867,7 +938,9 @@ int main(int argc, char **argv) {
 	}
 
 	/* Become a daemon */
-	/* XXX:TODO: Become a daemon */
+	if (daemon_enabled) {
+		filed_daemonize();
+	}
 
 	/* Initialize */
 	init_ret = filed_init(cache_size);

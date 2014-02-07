@@ -6,6 +6,7 @@ filed \- serve files over HTTP
 .ll +10
 .B filed
 .RB [{ \-h | \-\-help }]
+.RB [{ \-d | \-\-daemon }]
 .RB [{ \-b | \-\-bind }
 .IR address ]
 .RB [{ \-p | \-\-port }
@@ -28,6 +29,11 @@ serves files over HTTP as minimally as possible.  Only static files (i.e., files
 .TP
 .B -h (or --help)
 Prints detailed usage information
+
+.TP
+.B -d (or --daemon)
+Instructs filed to become a daemon after initializing
+the listening TCP socket and log files.
 
 .TP
 .B -b (or --bind)
