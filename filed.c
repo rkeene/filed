@@ -745,14 +745,29 @@ static void filed_getopt_long_setopt(struct option *opt, const char *name, int h
 
 /* Resolve a username to a UID */
 static int filed_user_lookup(const char *user, uid_t *user_id) {
+	char *next;
+	uid_t user_id_check;
+#ifndef NO_GETPWNAM
 	struct passwd *ent;
 
 	ent = getpwnam(user);
-	if (ent == NULL) {
+	if (ent != NULL) {
+		*user_id = ent->pw_uid;
+
+		return(0);
+	}
+#endif
+
+	user_id_check = strtoull(user, &next, 10);
+	if (next == NULL) {
 		return(1);
 	}
 
-	*user_id = ent->pw_uid;
+	if (next[0] != '\0') {
+		return(1);
+	}
+
+	*user_id = user_id_check;
 
 	return(0);
 }
