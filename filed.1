@@ -5,10 +5,20 @@ filed \- serve files over HTTP
 .SH SYNOPSIS
 .ll +10
 .B filed
-.RB [ "\-h" ]
-.RB [ \-p\ port ]
-.RB [ \-t\ counts ]
-.RB [ \-c\ entries ]
+.RB [{ \-h | \-\-help }]
+.RB [{ \-b | \-\-bind }
+.IR address ]
+.RB [{ \-p | \-\-port }
+.IR port ]
+.RB [{ \-t | \-\-threads }
+.IR count ]
+.RB [{ \-c | \-\-cache }
+.IR entries ]
+.RB [{ \-u | \-\-user }
+.IR user ]
+.RB [{ \-r | \-\-root }
+.IR directory ]
+
 .ll -10
 .SH DESCRIPTION
 .I FILED
@@ -16,8 +26,47 @@ serves files over HTTP as minimally as possible.  Only static files (i.e., files
 
 .SH OPTIONS
 .TP
-.B \-p
-port
+.B -h (or --help)
+Prints detailed usage information
+
+.TP
+.B -b (or --bind)
+Specifies the address to listen for incoming HTTP
+requests on.
+
+.TP
+.B -p (or --port)
+Specifies the TCP port number to listen for incoming HTTP
+requests on.
+
+.TP
+.B -t (or --threads)
+Specifies the number of worker threads to create. Each
+worker thread can service one concurrent HTTP session.
+Thus the number of threads created will determine how
+many simultaneous transfers will be possible.
+
+.TP
+.B -c (or --cache)
+Specifies the number of file information cache entries
+to allocate.  Each cache entry holds file information as
+well as an open file descriptor to the file, so resource
+limits (i.e., ulimit) should be considered.  This should
+be a prime number for ideal use with the lookup method.
+
+.TP
+.B -u (or --user)
+Specifies the user to switch user IDs to before servicing
+requests.  The default is not change user IDs.
+
+.TP
+.B -r (or --root)
+Specifies the directory to act as the root directory for
+the file server.  If this option is specified, chroot(2)
+is called.  The default is not change root directories,
+that is, the "/" directory is shared out.  This will
+likely be a security issue, so this option should always
+be used.
 
 .SH AUTHOR
 .Sp
