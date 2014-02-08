@@ -846,7 +846,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	if (long_help) {
 		fprintf(output, "\n");
 		fprintf(output, "  Usage:\n");
-		fprintf(output, "      -h (or --help) prints this usage information\n");
+		fprintf(output, "      -h (or --help) prints this usage information.\n");
 		fprintf(output, "\n");
 		fprintf(output, "      -d (or --daemon) instructs filed to become a daemon after initializing\n");
 		fprintf(output, "                       the listening TCP socket and log files.\n");
