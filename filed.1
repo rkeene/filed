@@ -7,6 +7,7 @@ filed \- serve files over HTTP
 .B filed
 .RB [{ \-h | \-\-help }]
 .RB [{ \-d | \-\-daemon }]
+.RB [{ \-v | \-\-version }]
 .RB [{ \-b | \-\-bind }
 .IR address ]
 .RB [{ \-p | \-\-port }
@@ -38,6 +39,12 @@ Instructs
 .B filed
 to become a daemon after initializing
 the listening TCP socket and log files.
+
+.TP
+.B -v (or --version)
+Instructs
+.B filed
+to print out its version number and then exit.
 
 .TP
 .B -b (or --bind)

@@ -20,8 +20,9 @@
 #include <pwd.h>
 
 /* Compile time constants */
+#define FILED_VERSION "0.9"
 #define FILED_SENDFILE_MAX 16777215
-#define MAX_FAILURE_COUNT 30
+#define FILED_MAX_FAILURE_COUNT 30
 #define FILED_DEFAULT_TYPE "application/octet-stream"
 
 /* Default values */
@@ -786,7 +787,7 @@ static void *filed_worker_thread(void *arg_v) {
 	struct sockaddr_in6 addr;
 	char logbuf_ip[128];
 	socklen_t addrlen;
-	int failure_count = 0, max_failure_count = MAX_FAILURE_COUNT;
+	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
 	int master_fd, fd;
 
 	/* Read arguments */
@@ -873,6 +874,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	fprintf(output, "  Options:\n");
 	fprintf(output, "      -h, --help\n");
 	fprintf(output, "      -d, --daemon\n");
+	fprintf(output, "      -v, --version\n");
 	fprintf(output, "      -b <address>, --bind <address>\n");
 	fprintf(output, "      -p <port>, --port <port>\n");
 	fprintf(output, "      -t <count>, --threads <count>\n");
@@ -888,6 +890,8 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "\n");
 		fprintf(output, "      -d (or --daemon) instructs filed to become a daemon after initializing\n");
 		fprintf(output, "                       the listening TCP socket and log files.\n");
+		fprintf(output, "\n");
+		fprintf(output, "      -v (or --version) instructs filed print out the version number and exit.\n");
 		fprintf(output, "\n");
 		fprintf(output, "      -b (or --bind) specifies the address to listen for incoming HTTP\n");
 		fprintf(output, "                     requests on.  The default value is \"%s\".\n", BIND_ADDR);
@@ -1033,7 +1037,7 @@ static int filed_daemonize(void) {
 
 /* Run process */
 int main(int argc, char **argv) {
-	struct option options[10];
+	struct option options[11];
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	FILE *log_fp;
 	uid_t user = 0;
@@ -1054,8 +1058,9 @@ int main(int argc, char **argv) {
 	filed_getopt_long_setopt(&options[6], "help", no_argument, 'h');
 	filed_getopt_long_setopt(&options[7], "daemon", no_argument, 'd');
 	filed_getopt_long_setopt(&options[8], "log", required_argument, 'l');
-	filed_getopt_long_setopt(&options[9], NULL, 0, 0);
-	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:l:hd", options, NULL)) != -1) {
+	filed_getopt_long_setopt(&options[9], "version", no_argument, 'v');
+	filed_getopt_long_setopt(&options[10], NULL, 0, 0);
+	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:l:hdv", options, NULL)) != -1) {
 		switch(ch) {
 			case 'p':
 				port = atoi(optarg);
@@ -1087,6 +1092,10 @@ int main(int argc, char **argv) {
 			case 'd':
 				daemon_enabled = 1;
 				break;
+			case 'v':
+				printf("filed version %s\n", FILED_VERSION);
+
+				return(0);
 			case '?':
 			case ':':
 				filed_print_help(stderr, 0, NULL);
