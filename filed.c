@@ -1119,6 +1119,16 @@ int main(int argc, char **argv) {
 		return(1);
 	}
 
+	/* Become a daemon */
+	if (daemon_enabled) {
+		init_ret = filed_daemonize();
+		if (init_ret != 0) {
+			perror("filed_daemonize");
+
+			return(6);
+		}
+	}
+
 	/* Chroot, if appropriate */
 	if (newroot) {
 		chdir_ret = chdir(newroot);
@@ -1146,11 +1156,6 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	/* Become a daemon */
-	if (daemon_enabled) {
-		filed_daemonize();
-	}
-
 	/* Initialize */
 	init_ret = filed_init(cache_size);
 	if (init_ret != 0) {
@@ -1172,7 +1177,7 @@ int main(int argc, char **argv) {
 	if (init_ret != 0) {
 		perror("filed_worker_threads_init");
 
-		return(4);
+		return(5);
 	}
 
 	/* Wait for threads to exit */
