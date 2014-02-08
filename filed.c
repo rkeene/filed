@@ -186,7 +186,7 @@ static int filed_listen(const char *address, unsigned int port) {
 /* Log a message */
 //#define FILED_DONT_LOG
 #ifdef FILED_DONT_LOG
-#  define filed_logging_thread_init() 0
+#  define filed_logging_thread_init(x) 0
 #  define filed_log_msg_debug(x, ...) /**/
 #  define filed_log_msg(x) /**/
 #else
@@ -225,6 +225,7 @@ static void *filed_logging_thread(void *arg_p) {
 		curr = prev;
 		while (curr) {
 			fprintf(fp, "%s THREAD=%llu\n", curr->buffer, (unsigned long long) curr->thread);
+			fflush(fp);
 
 			prev = curr;
 			curr = curr->_prev;
@@ -236,19 +237,9 @@ static void *filed_logging_thread(void *arg_p) {
 	return(NULL);
 }
 
-static int filed_logging_thread_init(const char *logfile) {
+static int filed_logging_thread_init(FILE *logfp) {
 	struct filed_logging_thread_args *args;
 	pthread_t thread_id;
-	FILE *logfp;
-
-	if (strcmp(logfile, "-") == 0) {
-		logfp = stdout;
-	} else {
-		logfp = fopen(logfile, "a+");
-		if (logfp == NULL) {
-			return(1);
-		}
-	}
 
 	args = malloc(sizeof(*args));
 	args->fp = logfp;
@@ -1006,6 +997,7 @@ static int filed_daemonize(void) {
 int main(int argc, char **argv) {
 	struct option options[10];
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
+	FILE *log_fp;
 	uid_t user = 0;
 	int port = PORT, thread_count = THREAD_COUNT;
 	int cache_size = CACHE_SIZE;
@@ -1069,6 +1061,18 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	/* Open log file */
+	if (strcmp(log_file, "-") == 0) {
+		log_fp = stdout;
+	} else {
+		log_fp = fopen(log_file, "a+");
+		if (log_fp == NULL) {
+			perror("fopen");
+
+			return(4);
+		}
+	}
+
 	/* Create listening socket */
 	fd = filed_listen(bind_addr, port);
 	if (fd < 0) {
@@ -1118,7 +1122,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Create logging thread */
-	init_ret = filed_logging_thread_init(log_file);
+	init_ret = filed_logging_thread_init(log_fp);
 	if (init_ret != 0) {
 		perror("filed_logging_thread_init");
 
