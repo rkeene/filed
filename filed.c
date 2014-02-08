@@ -29,10 +29,16 @@
 #define THREAD_COUNT 5
 #define BIND_ADDR "::"
 #define CACHE_SIZE 8209
+#define LOG_FILE "-"
 
 /* Arguments for worker threads */
 struct filed_worker_thread_args {
 	int fd;
+};
+
+/* Arguments for logging threads */
+struct filed_logging_thread_args {
+	FILE *fp;
 };
 
 /* File information */
@@ -65,10 +71,24 @@ struct filed_http_request {
 	} headers;
 };
 
+/* Log record */
+struct filed_log_entry {
+	struct filed_log_entry *_next;
+	struct filed_log_entry *_prev;
+	pthread_t thread;
+	char buffer[1010];
+	int level;
+};
+
 /* Global variables */
 /** Open File cache **/
 struct filed_fileinfo *filed_fileinfo_fdcache = NULL;
 unsigned int filed_fileinfo_fdcache_size = 0;
+
+/** Logging **/
+struct filed_log_entry *filed_log_msg_list;
+pthread_mutex_t filed_log_msg_list_mutex;
+pthread_cond_t filed_log_msg_list_ready;
 
 /* Initialize cache */
 static int filed_init_cache(unsigned int cache_size) {
@@ -170,26 +190,101 @@ static int filed_listen(const char *address, unsigned int port) {
 #  define filed_log_msg_debug(x, ...) /**/
 #  define filed_log_msg(x) /**/
 #else
+#ifdef FILED_DEBUG
+#  define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
+#else
+#  define filed_log_msg_debug(x, ...) /**/
+#endif
+
 /* Initialize logging thread */
-static int filed_logging_thread_init(void) {
-	/* XXX:TODO: Unimplemented */
+static void *filed_logging_thread(void *arg_p) {
+	struct filed_logging_thread_args *arg;
+	struct filed_log_entry *curr, *prev;
+	FILE *fp;
+
+	arg = arg_p;
+
+	fp = arg->fp;
+
+	while (1) {
+		pthread_mutex_lock(&filed_log_msg_list_mutex);
+		pthread_cond_wait(&filed_log_msg_list_ready, &filed_log_msg_list_mutex);
+
+		curr = filed_log_msg_list;
+		filed_log_msg_list = NULL;
+
+		pthread_mutex_unlock(&filed_log_msg_list_mutex);
+
+		prev = NULL;
+		for (; curr; curr = curr->_next) {
+			curr->_prev = prev;
+
+			prev = curr;
+		}
+
+		curr = prev;
+		while (curr) {
+			fprintf(fp, "%s THREAD=%llu\n", curr->buffer, (unsigned long long) curr->thread);
+
+			prev = curr;
+			curr = curr->_prev;
+
+			free(prev);
+		}
+	}
+
+	return(NULL);
+}
+
+static int filed_logging_thread_init(const char *logfile) {
+	struct filed_logging_thread_args *args;
+	pthread_t thread_id;
+	FILE *logfp;
+
+	if (strcmp(logfile, "-") == 0) {
+		logfp = stdout;
+	} else {
+		logfp = fopen(logfile, "a+");
+		if (logfp == NULL) {
+			return(1);
+		}
+	}
+
+	args = malloc(sizeof(*args));
+	args->fp = logfp;
+
+	filed_log_msg_list = NULL;
+
+	pthread_mutex_init(&filed_log_msg_list_mutex, NULL);
+
+	pthread_create(&thread_id, NULL, filed_logging_thread, args);
+
 	return(0);
 }
 
-/* XXX:TODO: Unimplemented */
-#define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
-
 static void filed_log_msg(const char *fmt, ...) {
-	char buffer[1010];
+	struct filed_log_entry *entry;
 	va_list args;
+
+	entry = malloc(sizeof(*entry));
 
 	va_start(args, fmt);
 
-	vsnprintf(buffer, sizeof(buffer), fmt, args);
+	vsnprintf(entry->buffer, sizeof(entry->buffer), fmt, args);
 
 	va_end(args);
 
-	fprintf(stderr, "%s\n", buffer);
+	entry->thread = pthread_self();
+	entry->level = 0;
+
+	pthread_mutex_lock(&filed_log_msg_list_mutex);
+
+	entry->_next = filed_log_msg_list;
+	filed_log_msg_list = entry;
+
+	pthread_mutex_unlock(&filed_log_msg_list_mutex);
+
+	pthread_cond_signal(&filed_log_msg_list_ready);
 
 	return;
 }
@@ -211,7 +306,6 @@ static char *filed_format_time(char *buffer, size_t buffer_len, const time_t tim
 }
 
 /* hash */
-/* XXX:TODO: Rewrite this */
 static unsigned int filed_hash(const unsigned char *value, unsigned int modulus) {
 	unsigned char curr, prev;
 	int diff;
@@ -668,6 +762,7 @@ static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct filed_http_request request;
 	struct sockaddr_in6 addr;
+	char logbuf[128];
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = MAX_FAILURE_COUNT;
 	int master_fd, fd;
@@ -701,7 +796,9 @@ static void *filed_worker_thread(void *arg_v) {
 		}
 
 		/* Log the new connection */
-		filed_log_msg("NEW_CONNECTION SRC_ADDR=... SRC_PORT=... FD=%i", fd);
+		logbuf[0]='\0';
+		inet_ntop(AF_INET6, &addr.sin6_addr, logbuf, sizeof(logbuf));
+		filed_log_msg("NEW_CONNECTION SRC_ADDR=%s SRC_PORT=%lu FD=%i", logbuf, (unsigned long) addr.sin6_port, fd);
 
 		/* Reset failure count*/
 		failure_count = 0;
@@ -899,7 +996,7 @@ static int filed_daemonize(void) {
 /* Run process */
 int main(int argc, char **argv) {
 	struct option options[9];
-	const char *bind_addr = BIND_ADDR, *newroot = NULL;
+	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	uid_t user = 0;
 	int port = PORT, thread_count = THREAD_COUNT;
 	int cache_size = CACHE_SIZE;
@@ -1008,7 +1105,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Create logging thread */
-	init_ret = filed_logging_thread_init();
+	init_ret = filed_logging_thread_init(log_file);
 	if (init_ret != 0) {
 		perror("filed_logging_thread_init");
 
