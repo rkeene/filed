@@ -582,8 +582,8 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 static void filed_handle_client(int fd, struct filed_http_request *request) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
-	size_t sendfile_len, sendfile_sent, sendfile_size;
-	off_t sendfile_offset;
+	size_t sendfile_size;
+	off_t sendfile_offset, sendfile_sent, sendfile_len;
 	char *path;
 	char *date_current, date_current_b[64];
 	int http_code;
@@ -758,9 +758,8 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				}
 			}
 
-			/* XXX: TODO: Report status */
 			filed_log_msg("SEND_COMPLETE STATUS=%s FILE_FD=%i FD=%i BYTES=%llu BYTES_SENT=%llu",
-				"<unknown>",
+				(sendfile_sent == request->headers.range.length) ? "OK" : "PARTIAL",
 				fileinfo->fd,
 				fd,
 				(unsigned long long) request->headers.range.length,
