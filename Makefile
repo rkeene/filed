@@ -17,7 +17,8 @@ filed: filed.o
 filed.o: filed.c filed-mime-types.h
 
 filed-mime-types.h: generate-mime-types
-	./generate-mime-types "$(MIMETYPES)" > filed-mime-types.h
+	./generate-mime-types "$(MIMETYPES)" > filed-mime-types.h.new
+	mv filed-mime-types.h.new filed-mime-types.h
 
 install: filed filed.1
 	test -d "$(DESTDIR)$(mandir)/man1" || mkdir -p "$(DESTDIR)$(mandir)/man1"
@@ -27,6 +28,7 @@ install: filed filed.1
 
 clean:
 	rm -f filed filed.o
+	rm -f filed-mime-types.h.new
 
 distclean: clean
 	rm -f filed-mime-types.h
