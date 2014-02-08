@@ -265,22 +265,6 @@ static void *filed_logging_thread(void *arg_p) {
 	return(NULL);
 }
 
-static int filed_logging_thread_init(FILE *logfp) {
-	struct filed_logging_thread_args *args;
-	pthread_t thread_id;
-
-	args = malloc(sizeof(*args));
-	args->fp = logfp;
-
-	filed_log_msg_list = NULL;
-
-	pthread_mutex_init(&filed_log_msg_list_mutex, NULL);
-
-	pthread_create(&thread_id, NULL, filed_logging_thread, args);
-
-	return(0);
-}
-
 static void filed_log_msg(const char *fmt, ...) {
 	struct filed_log_entry *entry;
 	va_list args;
@@ -308,7 +292,6 @@ static void filed_log_msg(const char *fmt, ...) {
 	return;
 }
 
-
 static const char *filed_log_ip(struct sockaddr *addr, char *buffer, size_t bufferlen) {
 	struct sockaddr_in *addr_v4;
 	struct sockaddr_in6 *addr_v6;
@@ -331,6 +314,24 @@ static const char *filed_log_ip(struct sockaddr *addr, char *buffer, size_t buff
 	}
 
 	return(retval);
+}
+
+static int filed_logging_thread_init(FILE *logfp) {
+	struct filed_logging_thread_args *args;
+	pthread_t thread_id;
+
+	args = malloc(sizeof(*args));
+	args->fp = logfp;
+
+	filed_log_msg_list = NULL;
+
+	pthread_mutex_init(&filed_log_msg_list_mutex, NULL);
+
+	pthread_create(&thread_id, NULL, filed_logging_thread, args);
+
+	filed_log_msg("START");
+
+	return(0);
 }
 #endif
 
