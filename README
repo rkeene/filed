@@ -1,0 +1,78 @@
+filed
+=====
+
+Introduction
+------------
+"filed" is a simple HTTP server for serving local static files over HTTP from
+Linux. It does the least amount of effort possible to get to the point of
+handing the actual transfer over to the kernel.
+
+It is multithreaded where every thread services a single concurrent client.
+It attempts to reduce latency by caching open file descriptors as well.
+
+It has no configuration file and supports only minimal configuration.
+Operation is described in the manual page.
+
+Usage
+-----
+The simplest usage of "filed" is to run it with no arguments.  This will start
+up an HTTP server listening on port 80 and sharing out the root filesystem for
+the system as the current user.  You probably do not want to share out your
+root filesystem since that will expose information such as "/etc/passwd" to
+anonymous access.  You probably also don't want to do that as root since then
+sensitive information such as "/etc/shadow" could be used to compromise the
+system.
+
+Therefore, the "--user" and "--root" options should be used to specify a user
+for "filed" to run as in addition to a directory to change root (chroot(2)) to
+prior to serving out files.
+
+Example 1, insecure file sharing:
+	$ filed
+
+Example 2, sharing sensitive information:
+	# filed
+
+Example 3, sharing only a specific directory:
+	# filed --root /www --user nobody
+
+Example 4, running as a daemon:
+	# filed --root /www --user nobody --daemon
+
+Build Time Considerations
+-------------------------
+In general, it is best to leave all configuration to run-time so that a
+compiled binary can do as much as possible without needing to be recompiled.
+However, there are some things that are best done at compile time for
+various reasons, especially in the name of performance or executable size.
+
+filed admits those trade-offs are occasionally required and offers the
+following tunables that can only be toggled during compile-time:
+
+   1. Logging (CFLAGS, -DFILED_DONT_LOG=1)
+	It is possible to disable ALL logging from filed.  When logging is
+	completely disabled interlocks (mutexes) for the logging pointer are
+	not engaged and the logging functions are not compiled at all.
+	This results in a slightly smaller and faster binary
+
+   2. Debugging (CFLAGS, -DFILED_DEBUG=1)
+	This is an internal option and should only be used during development.
+
+   3. Differing HTTP semantics (CFLAGS, -DFILED_NONBLOCK_HTTP=1)
+	It is possible that some HTTP clients may not process the HTTP stream
+	being delivered if they cannot write to the HTTP stream itself.  This
+	has not been observed yet, but it is possible.  If these semantics are
+	needed (and they should not be) then they can be enabled with this
+	flag at the cost of performance
+
+   4. MIME Types (MIMETYPES)
+	For single-file convience "filed" compiles the mapping of file
+	extensions (the string in the filename following its last dot ("."))
+	into the executable.  This mapping comes from a file in the format of
+		type1   type1_extension1 type1_extension2...
+		type2   type2_extension1 type2_extension2...
+		...
+	However it may not be desirable to include this mapping, or it may be
+	desirable to use your own mapping rather than the default one.  This
+	can be done by specifying the MIMETYPES macro to "make".  If no
+	mapping is desired, "/dev/null" may be specified.
