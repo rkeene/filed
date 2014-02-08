@@ -184,11 +184,10 @@ static int filed_listen(const char *address, unsigned int port) {
 }
 
 /* Log a message */
-//#define FILED_DONT_LOG
 #ifdef FILED_DONT_LOG
 #  define filed_logging_thread_init(x) 0
 #  define filed_log_msg_debug(x, ...) /**/
-#  define filed_log_msg(x) /**/
+#  define filed_log_msg(x, ...) /**/
 #else
 #ifdef FILED_DEBUG
 #  define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -432,6 +431,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	int i;
 
 	fd = fileno(fp);
+	fd = fd;
 
 	range_start = 0;
 	range_end   = 0;
