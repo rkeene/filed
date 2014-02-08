@@ -148,25 +148,45 @@ static int filed_init(unsigned int cache_size) {
 
 /* Listen on a particular address/port */
 static int filed_listen(const char *address, unsigned int port) {
-	struct sockaddr_in6 addr;
+	struct sockaddr_in6 addr_v6;
+	struct sockaddr_in addr_v4;
+	struct sockaddr *addr;
+	socklen_t addr_len;
 	int pton_ret, bind_ret, listen_ret;
+	int family;
 	int fd;
 
-	addr.sin6_family = AF_INET6;
-	addr.sin6_flowinfo = 0;
-	addr.sin6_scope_id = 0;
-	addr.sin6_port = htons(port);
-	pton_ret = inet_pton(AF_INET6, address, addr.sin6_addr.s6_addr);
+
+	family = AF_INET6;
+	pton_ret = inet_pton(family, address, &addr_v6.sin6_addr.s6_addr);
 	if (pton_ret != 1) {
-		return(-1);
+		family = AF_INET;
+		pton_ret = inet_pton(family, address, &addr_v4.sin_addr.s_addr);
+		if (pton_ret != 1) {
+			return(-1);
+		}
+
+		addr_v4.sin_family = family;
+		addr_v4.sin_port = htons(port);
+
+		addr = (struct sockaddr *) &addr_v4;
+		addr_len = sizeof(addr_v4);
+	} else {
+		addr_v6.sin6_family = AF_INET6;
+		addr_v6.sin6_flowinfo = 0;
+		addr_v6.sin6_scope_id = 0;
+		addr_v6.sin6_port = htons(port);
+
+		addr = (struct sockaddr *) &addr_v6;
+		addr_len = sizeof(addr_v6);
 	}
 
-	fd = socket(AF_INET6, SOCK_STREAM, 0);
+	fd = socket(family, SOCK_STREAM, 0);
 	if (fd < 0) {
 		return(fd);
 	}
 
-	bind_ret = bind(fd, (const struct sockaddr *) &addr, sizeof(addr));
+	bind_ret = bind(fd, addr, addr_len);
 	if (bind_ret < 0) {
 		close(fd);
 
