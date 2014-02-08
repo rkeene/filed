@@ -848,6 +848,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	fprintf(output, "      -p <port>, --port <port>\n");
 	fprintf(output, "      -t <count>, --threads <count>\n");
 	fprintf(output, "      -c <entries>, --cache <entries>\n");
+	fprintf(output, "      -l <file>, --log <file>\n");
 	fprintf(output, "      -u <user>, --user <user>\n");
 	fprintf(output, "      -r <directory>, --root <directory>\n");
 
@@ -877,6 +878,14 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "                      limits (i.e., ulimit) should be considered.  This should\n");
 		fprintf(output, "                      be a prime number for ideal use with the lookup method.\n");
 		fprintf(output, "                      The default is %lu.\n", (unsigned long) CACHE_SIZE);
+		fprintf(output, "\n");
+		fprintf(output, "      -l (or --log) specifies a filename to open for writing log entries.  Log\n");
+		fprintf(output, "                    entries are made for various stages in transfering files.\n");
+		fprintf(output, "                    The log file is opened before switching users (see \"-u\")\n");
+		fprintf(output, "                    and root directories (see \"-r\").  The log file is never\n");
+		fprintf(output, "                    closed so log rotation without stopping the daemon is will\n");
+		fprintf(output, "                    not work.  The value of \"-\" indicates that standard output\n");
+		fprintf(output, "                    should be used for logging.  The default is \"%s\".\n", LOG_FILE);
 		fprintf(output, "\n");
 		fprintf(output, "      -u (or --user) specifies the user to switch user IDs to before servicing\n");
 		fprintf(output, "                     requests.  The default is not change user IDs.\n");
@@ -995,7 +1004,7 @@ static int filed_daemonize(void) {
 
 /* Run process */
 int main(int argc, char **argv) {
-	struct option options[9];
+	struct option options[10];
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	uid_t user = 0;
 	int port = PORT, thread_count = THREAD_COUNT;
@@ -1014,8 +1023,9 @@ int main(int argc, char **argv) {
 	filed_getopt_long_setopt(&options[5], "root", required_argument, 'r');
 	filed_getopt_long_setopt(&options[6], "help", no_argument, 'h');
 	filed_getopt_long_setopt(&options[7], "daemon", no_argument, 'd');
-	filed_getopt_long_setopt(&options[8], NULL, 0, 0);
-	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:hd", options, NULL)) != -1) {
+	filed_getopt_long_setopt(&options[8], "log", required_argument, 'l');
+	filed_getopt_long_setopt(&options[9], NULL, 0, 0);
+	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:l:hd", options, NULL)) != -1) {
 		switch(ch) {
 			case 'p':
 				port = atoi(optarg);
@@ -1040,6 +1050,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'r':
 				newroot = strdup(optarg);
+				break;
+			case 'l':
+				log_file = strdup(optarg);
 				break;
 			case 'd':
 				daemon_enabled = 1;

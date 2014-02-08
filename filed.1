@@ -15,6 +15,8 @@ filed \- serve files over HTTP
 .IR count ]
 .RB [{ \-c | \-\-cache }
 .IR entries ]
+.RB [{ \-l | \-\-log }
+.IR file ]
 .RB [{ \-u | \-\-user }
 .IR user ]
 .RB [{ \-r | \-\-root }
@@ -59,6 +61,16 @@ to allocate.  Each cache entry holds file information as
 well as an open file descriptor to the file, so resource
 limits (i.e., ulimit) should be considered.  This should
 be a prime number for ideal use with the lookup method.
+
+.TP
+.B -l (or --log)
+Specifies a filename to open for writing log entries.  Log
+entries are made for various stages in transfering files.
+The log file is opened before switching users (see "-u")
+and root directories (see "-r").  The log file is never
+closed so log rotation without stopping the daemon is will
+not work.  The value of "-" indicates that standard output
+should be used for logging.
 
 .TP
 .B -u (or --user)
