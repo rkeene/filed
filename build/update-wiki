@@ -2,5 +2,8 @@
 
 (
 	echo '<H2>NAME</H2>'
-	man2html -r filed.1 | sed '0,/<H2>NAME<\/H2>/ d;/<H2>Index<\/H2>/,$ d;s@<A HREF="../index.html">Return to Main Contents</A>@@;s@\[@\&#91;@;s@\]@\&#93;@' | sed '$ d;/^ *$/ d'
+	man2html -H linux.die.net -M /man -p filed.1 | \
+		sed '0,/<H2>NAME<\/H2>/ d;/<H2>Index<\/H2>/,$ d;s@<A HREF="../index.html">Return to Main Contents</A>@@;s@\[@\&#91;@;s@\]@\&#93;@' | \
+		sed '$ d;/^ *$/ d' | \
+		sed 's@\(http://linux.die.net/man/[^+]*\)+@\1/@'
 ) | fossil wiki commit Manual
