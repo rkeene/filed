@@ -393,6 +393,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
+		/* For requests for the root directory, serve out index.html */
 		if (path[0] == '\0' || (path[0] == '/' && path[1] == '\0')) {
 			open_path = "/index.html";
 		} else {
@@ -417,7 +418,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->fd = fd;
 		cache->len = len;
 		cache->path = strdup(path);
-		cache->type = filed_determine_mimetype(path);
+		cache->type = filed_determine_mimetype(open_path);
 
 		/* XXX:TODO: Determine */
 		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
