@@ -729,6 +729,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				}
 			}
 
+			/* XXX: TODO: Report status */
 			filed_log_msg("SEND_COMPLETE STATUS=%s FILE_FD=%i FD=%i BYTES=%llu BYTES_SENT=%llu",
 				"<unknown>",
 				fileinfo->fd,
