@@ -209,6 +209,7 @@ static int filed_listen(const char *address, unsigned int port) {
 #  define filed_logging_thread_init(x) 0
 #  define filed_log_msg_debug(x, ...) /**/
 #  define filed_log_msg(x, ...) /**/
+#  define filed_log_ip(x, ...) "<unknown>"
 #else
 #ifdef FILED_DEBUG
 #  define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -298,6 +299,31 @@ static void filed_log_msg(const char *fmt, ...) {
 	pthread_cond_signal(&filed_log_msg_list_ready);
 
 	return;
+}
+
+
+static const char *filed_log_ip(struct sockaddr *addr, char *buffer, size_t bufferlen) {
+	struct sockaddr_in *addr_v4;
+	struct sockaddr_in6 *addr_v6;
+	const char *retval = NULL;
+
+	addr_v6 = (struct sockaddr_in6 *) addr;
+
+	switch (addr_v6->sin6_family) {
+		case AF_INET:
+			addr_v4 = (struct sockaddr_in *) addr;
+			retval = inet_ntop(AF_INET, &addr_v4->sin_addr, buffer, bufferlen);
+			break;
+		case AF_INET6:
+			retval = inet_ntop(AF_INET6, &addr_v6->sin6_addr, buffer, bufferlen);
+			break;
+	}
+
+	if (retval == NULL) {
+		retval = "<unknown>";
+	}
+
+	return(retval);
 }
 #endif
 
@@ -819,7 +845,7 @@ static void *filed_worker_thread(void *arg_v) {
 
 		/* Log the new connection */
 		filed_log_msg("NEW_CONNECTION SRC_ADDR=%s SRC_PORT=%lu FD=%i",
-			inet_ntop(AF_INET6, &addr.sin6_addr, logbuf_ip, sizeof(logbuf_ip)) ? logbuf_ip : "<unknown>",
+			filed_log_ip((struct sockaddr *) &addr, logbuf_ip, sizeof(logbuf_ip)),
 			(unsigned long) addr.sin6_port,
 			fd
 		);
