@@ -81,17 +81,19 @@ foreach extension [array names extensioninfo] {
 }
 
 # Emit a C fragment to take a pointer (p) to an extension determine the mime type
-puts "\tswitch (filed_hash((const unsigned char *) p, $modulus)) \{"
-foreach hash [lsort -integer -increasing [array names hashinfo]] {
-	puts "\t\tcase $hash:"
-	foreach extension $hashinfo($hash) {
-		puts "\t\t\tif (strcmp(p, \"$extension\") == 0) \{"
-		puts "\t\t\t\treturn(\"$extensioninfo($extension)\");"
-		puts "\t\t\t\}"
+if {[llength [array names hashinfo]] > 0} {
+	puts "\tswitch (filed_hash((const unsigned char *) p, $modulus)) \{"
+	foreach hash [lsort -integer -increasing [array names hashinfo]] {
+		puts "\t\tcase $hash:"
+		foreach extension $hashinfo($hash) {
+			puts "\t\t\tif (strcmp(p, \"$extension\") == 0) \{"
+			puts "\t\t\t\treturn(\"$extensioninfo($extension)\");"
+			puts "\t\t\t\}"
+		}
+		puts "\t\t\treturn(FILED_DEFAULT_TYPE);"
 	}
-	puts "\t\t\treturn(FILED_DEFAULT_TYPE);"
+	puts "\t\}"
 }
-puts "\t\}"
 
 # Declare victory
 exit 0
