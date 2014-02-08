@@ -29,8 +29,6 @@ clean:
 	rm -f filed filed.o
 
 distclean: clean
-
-mrproper: distclean
 	rm -f filed-mime-types.h
 
-.PHONY: all install clean distclean mrproper
+.PHONY: all install clean distclean
