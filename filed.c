@@ -431,7 +431,6 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	int i;
 
 	fd = fileno(fp);
-	fd = fd;
 
 	range_start = 0;
 	range_end   = 0;
@@ -531,6 +530,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	buffer_st->headers.range.length  = range_length;
 
 	return(buffer_st);
+
+	/* Make compiler happy */
+	fd = fd;
 }
 
 /* Return an error page */
@@ -753,7 +755,7 @@ static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct filed_http_request request;
 	struct sockaddr_in6 addr;
-	char logbuf[128];
+	char logbuf_ip[128];
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = MAX_FAILURE_COUNT;
 	int master_fd, fd;
@@ -787,9 +789,11 @@ static void *filed_worker_thread(void *arg_v) {
 		}
 
 		/* Log the new connection */
-		logbuf[0]='\0';
-		inet_ntop(AF_INET6, &addr.sin6_addr, logbuf, sizeof(logbuf));
-		filed_log_msg("NEW_CONNECTION SRC_ADDR=%s SRC_PORT=%lu FD=%i", logbuf, (unsigned long) addr.sin6_port, fd);
+		filed_log_msg("NEW_CONNECTION SRC_ADDR=%s SRC_PORT=%lu FD=%i",
+			inet_ntop(AF_INET6, &addr.sin6_addr, logbuf_ip, sizeof(logbuf_ip)) ? logbuf_ip : "<unknown>",
+			(unsigned long) addr.sin6_port,
+			fd
+		);
 
 		/* Reset failure count*/
 		failure_count = 0;
@@ -802,6 +806,11 @@ static void *filed_worker_thread(void *arg_v) {
 	filed_log_msg("THREAD_DIED ABNORMAL");
 
 	return(NULL);
+
+	/* Make compiler happy */
+	logbuf_ip[0] = '\0';
+	logbuf_ip[0] = logbuf_ip[0];
+
 }
 
 /* Create worker threads */
