@@ -375,6 +375,7 @@ static const char *filed_determine_mimetype(const char *path) {
 /* Open a file and return file information */
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
 	struct filed_fileinfo *cache;
+	const char *open_path;
 	unsigned int cache_idx;
 	off_t len;
 	int fd;
@@ -392,7 +393,13 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
-		fd = open(path, O_RDONLY | O_LARGEFILE);
+		if (path[0] == '\0' || (path[0] == '/' && path[1] == '\0')) {
+			open_path = "/index.html";
+		} else {
+			open_path = path;
+		}
+
+		fd = open(open_path, O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
 			pthread_mutex_unlock(&cache->mutex);
 
@@ -559,7 +566,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 static void filed_error_page(FILE *fp, const char *date_current, int error_number) {
 	char *error_string = "<html><head><title>ERROR</title></head><body>Unable to process request</body></html>";
 
-	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s",
+	fprintf(fp, "HTTP/1.1 %i Not OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s",
 		error_number,
 		date_current,
 		date_current,
