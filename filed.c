@@ -221,6 +221,7 @@ static int filed_listen(const char *address, unsigned int port) {
 static void *filed_logging_thread(void *arg_p) {
 	struct filed_logging_thread_args *arg;
 	struct filed_log_entry *curr, *prev;
+	time_t now;
 	FILE *fp;
 
 	arg = arg_p;
@@ -236,6 +237,8 @@ static void *filed_logging_thread(void *arg_p) {
 
 		pthread_mutex_unlock(&filed_log_msg_list_mutex);
 
+		now = time(NULL);
+
 		prev = NULL;
 		for (; curr; curr = curr->_next) {
 			curr->_prev = prev;
@@ -245,7 +248,11 @@ static void *filed_logging_thread(void *arg_p) {
 
 		curr = prev;
 		while (curr) {
-			fprintf(fp, "%s THREAD=%llu\n", curr->buffer, (unsigned long long) curr->thread);
+			fprintf(fp, "%s THREAD=%llu TIME=%llu\n",
+				curr->buffer,
+				(unsigned long long) curr->thread,
+				(unsigned long long) now
+			);
 			fflush(fp);
 
 			prev = curr;
@@ -639,11 +646,11 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 	}
 
 	if (request->headers.range.present) {
-		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s RANGE_START=%llu RANGE_LENGTH=%llu",
+		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s RANGE_START=%llu RANGE_LENGTH=%lli",
 			fd,
 			request->path,
 			(unsigned long long) request->headers.range.offset,
-			(unsigned long long) request->headers.range.length
+			(long long) request->headers.range.length
 		);
 	} else {
 		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s", fd, request->path);
@@ -665,7 +672,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 
 				filed_error_page(fp, date_current, 416);
 			} else {
-				if (request->headers.range.length < 0) {
+				if (request->headers.range.length == ((off_t) -1)) {
 					filed_log_msg_debug("Computing length to fit in bounds: fileinfo->len = %llu, request->headers.range.offset = %llu",
 						(unsigned long long) fileinfo->len,
 						(unsigned long long) request->headers.range.offset
@@ -674,9 +681,9 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 					request->headers.range.length = fileinfo->len - request->headers.range.offset;
 				}
 
-				filed_log_msg_debug("Partial request, starting at: %llu and running for %llu bytes",
+				filed_log_msg_debug("Partial request, starting at: %llu and running for %lli bytes",
 					(unsigned long long) request->headers.range.offset,
-					(unsigned long long) request->headers.range.length
+					(long long) request->headers.range.length
 				);
 
 				http_code = 206;
