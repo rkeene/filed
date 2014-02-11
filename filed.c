@@ -46,7 +46,7 @@ struct filed_logging_thread_args {
 /* File information */
 struct filed_fileinfo {
 	pthread_mutex_t mutex;
-	char *path;
+	char path[FILED_PATH_BUFFER_SIZE];
 	int fd;
 	off_t len;
 	char *lastmod;
@@ -58,11 +58,11 @@ struct filed_fileinfo {
 struct filed_http_request {
 	/** Buffers **/
 	struct filed_fileinfo fileinfo;
-	char path_b[FILED_PATH_BUFFER_SIZE];
 	char tmpbuf[1010];
 
 	/** HTTP Request information **/
-	char *path;     /*** Path being requested ***/
+	/*** Path being requested ***/
+	char path[FILED_PATH_BUFFER_SIZE]; 
 
 	struct {
 		struct {
@@ -139,7 +139,7 @@ static int filed_init_cache(unsigned int cache_size) {
 			return(1);
 		}
 
-		filed_fileinfo_fdcache[idx].path = strdup("");
+		filed_fileinfo_fdcache[idx].path[0] = '\0';
 		filed_fileinfo_fdcache[idx].fd = -1;
 		filed_fileinfo_fdcache[idx].lastmod = "";
 		filed_fileinfo_fdcache[idx].type = "";
@@ -515,7 +515,6 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 			return(NULL);
 		}
 
-		free(cache->path);
 		if (cache->fd >= 0) {
 			close(cache->fd);
 		}
@@ -525,7 +524,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 
 		cache->fd = fd;
 		cache->len = len;
-		cache->path = strdup(path);
+		strcpy(cache->path, path);
 		cache->type = filed_determine_mimetype(open_path);
 
 		/* XXX:TODO: Determine */
@@ -559,8 +558,8 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 /* Process an HTTP request and return the path requested */
 static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_http_request *buffer_st) {
 	char *method, *path;
-	char *buffer, *tmpbuffer, *workbuffer, *workbuffer_next;
-	size_t buffer_len, tmpbuffer_len;
+	char *buffer, *workbuffer, *workbuffer_next;
+	size_t buffer_len;
 	off_t range_start, range_end, range_length;
 	int range_request;
 	int fd;
@@ -573,11 +572,8 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	range_request = 0;
 	range_length = -1;
 
-	buffer = buffer_st->path_b;
-	buffer_len = sizeof(buffer_st->path_b);
-
-	tmpbuffer = buffer_st->tmpbuf;
-	tmpbuffer_len = sizeof(buffer_st->tmpbuf);
+	buffer = buffer_st->tmpbuf;
+	buffer_len = sizeof(buffer_st->tmpbuf);
 
 	fgets(buffer, buffer_len, fp);
 
@@ -599,11 +595,20 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		buffer++;
 	}
 
-	for (i = 0; i < 100; i++) {
-		fgets(tmpbuffer, tmpbuffer_len, fp);
+	/* We only handle the "GET" method */
+	if (strcasecmp(method, "get") != 0) {
+		return(NULL);
+	}
 
-		if (strncasecmp(tmpbuffer, "Range: ", 7) == 0) {
-			workbuffer = tmpbuffer + 7;
+	/* Note path */
+	strcpy(buffer_st->path, path);
+
+	for (i = 0; i < 100; i++) {
+		buffer = buffer_st->tmpbuf;
+		fgets(buffer, buffer_len, fp);
+
+		if (strncasecmp(buffer, "Range: ", 7) == 0) {
+			workbuffer = buffer + 7;
 
 			if (strncasecmp(workbuffer, "bytes=", 6) == 0) {
 				workbuffer += 6;
@@ -624,14 +629,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 			}
 		}
 
-		if (memcmp(tmpbuffer, "\r\n", 2) == 0) {
+		if (memcmp(buffer, "\r\n", 2) == 0) {
 			break;
 		}
-	}
-
-	/* We only handle the "GET" method */
-	if (strcasecmp(method, "get") != 0) {
-		return(NULL);
 	}
 
 	/* Determine range */
@@ -650,7 +650,6 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	}
 
 	/* Fill up structure to return */
-	buffer_st->path   = path;
 	buffer_st->headers.range.present = range_request;
 	buffer_st->headers.range.offset  = range_start;
 	buffer_st->headers.range.length  = range_length;
@@ -699,7 +698,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	request = filed_get_http_request(fp, request);
 
-	if (request == NULL || request->path == NULL) {
+	if (request == NULL) {
 		filed_error_page(fp, date_current, 500);
 
 		log->buffer[0] = '\0';
