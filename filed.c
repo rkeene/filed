@@ -1000,7 +1000,7 @@ static void *filed_worker_thread(void *arg_v) {
 
 	return(NULL);
 
-	/* local_dummy_log is only used if FILED_DONT_LOG is anebled, otherwise it's not used, but the compiler hates that idea. */
+	/* local_dummy_log is only used if FILED_DONT_LOG is enabled, otherwise it's not used, but the compiler hates that idea. */
 	local_dummy_log.type = 0;
 	local_dummy_log.type = local_dummy_log.type;
 }
