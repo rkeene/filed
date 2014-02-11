@@ -61,6 +61,12 @@ struct filed_http_request {
 	char tmpbuf[1010];
 
 	/** HTTP Request information **/
+	/*** Type of request (HEAD or GET) ***/
+	enum {
+		FILED_REQUEST_METHOD_GET,
+		FILED_REQUEST_METHOD_HEAD
+	} method;
+
 	/*** Path being requested ***/
 	char path[FILED_PATH_BUFFER_SIZE]; 
 
@@ -103,6 +109,7 @@ struct filed_log_entry {
 	off_t file_length;
 	char ip[128];
 	int port;
+	int method;
 };
 
 /* Global variables */
@@ -247,6 +254,7 @@ static int filed_listen(const char *address, unsigned int port) {
 static void *filed_logging_thread(void *arg_p) {
 	struct filed_logging_thread_args *arg;
 	struct filed_log_entry *curr, *prev;
+	const char *method;
 	time_t now;
 	FILE *fp;
 
@@ -280,11 +288,24 @@ static void *filed_logging_thread(void *arg_p) {
 
 					break;
 				case FILED_LOG_TYPE_TRANSFER:
+					switch (curr->method) {
+						case FILED_REQUEST_METHOD_GET:
+							method="GET";
+							break;
+						case FILED_REQUEST_METHOD_HEAD:
+							method="HEAD";
+							break;
+						default:
+							method="<unknown>";
+							break;
+					}
+
 					if (curr->endtime == ((time_t) -1)) {
 						curr->endtime = now;
 					}
 
-					fprintf(fp, "TRANSFER PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+						method,
 						curr->buffer,
 						curr->ip, curr->port,
 						(unsigned long long) curr->starttime,
@@ -345,6 +366,7 @@ static struct filed_log_entry *filed_log_new(int initialize) {
 		retval->file_length = 0;
 		retval->ip[0] = '\0';
 		retval->port = -1;
+		retval->method = -1;
 	}
 
 	return(retval);
@@ -596,9 +618,17 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		buffer++;
 	}
 
-	/* We only handle the "GET" method */
-	if (strcasecmp(method, "get") != 0) {
-		return(NULL);
+	/* We only handle the "GET" and "HEAD' methods */
+	if (strcasecmp(method, "head") != 0) {
+		if (strcasecmp(method, "get") != 0) {
+			return(NULL);
+		}
+
+		/* GET request */
+		buffer_st->method = FILED_REQUEST_METHOD_GET;
+	} else {
+		/* HEAD request */
+		buffer_st->method = FILED_REQUEST_METHOD_HEAD;
 	}
 
 	/* Note path */
@@ -661,17 +691,23 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 }
 
 /* Return an error page */
-static void filed_error_page(FILE *fp, const char *date_current, int error_number) {
+static void filed_error_page(FILE *fp, const char *date_current, int error_number, int method) {
 	char *error_string = "<html><head><title>ERROR</title></head><body>Unable to process request</body></html>";
 
-	fprintf(fp, "HTTP/1.1 %i Not OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n%s",
+	fprintf(fp, "HTTP/1.1 %i Not OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
 		error_number,
 		date_current,
 		date_current,
 		(unsigned long long) strlen(error_string),
-		"text/html",
-		error_string
+		"text/html"
 	);
+
+	/* silence error string for HEAD requests */
+	if (method != FILED_REQUEST_METHOD_HEAD) {
+		fprintf(fp, "%s", error_string);
+	}
+
+	return;
 }
 
 /* Handle a single request from a client */
@@ -699,7 +735,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	request = filed_get_http_request(fp, request);
 
 	if (request == NULL) {
-		filed_error_page(fp, date_current, 500);
+		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET);
 
 		log->buffer[0] = '\0';
 		log->http_code = 500;
@@ -719,7 +755,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	fileinfo = filed_open_file(path, &request->fileinfo);
 	if (fileinfo == NULL) {
-		filed_error_page(fp, date_current, 404);
+		filed_error_page(fp, date_current, 404, request->method);
 
 		log->http_code = 404;
 		log->reason = "open_failed";
@@ -728,7 +764,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	} else {
 		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
 			if (request->headers.range.offset >= fileinfo->len) {
-				filed_error_page(fp, date_current, 416);
+				filed_error_page(fp, date_current, 416, request->method);
 
 				log->http_code = 416;
 				log->reason = "range_invalid";
@@ -785,6 +821,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 			log->req_offset = request->headers.range.offset;
 			log->req_length = request->headers.range.length;
 			log->file_length = fileinfo->len;
+			log->method = request->method;
 
 #ifdef FILED_NONBLOCK_HTTP
 			int socket_flags;
@@ -804,7 +841,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 			sendfile_offset = request->headers.range.offset;
 			sendfile_len = request->headers.range.length;
 			sendfile_sent = 0;
-			while (1) {
+			while (request->method == FILED_REQUEST_METHOD_GET) {
 				if (sendfile_len > FILED_SENDFILE_MAX) {
 					sendfile_size = FILED_SENDFILE_MAX;
 				} else {
