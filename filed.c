@@ -1012,6 +1012,10 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "                    closed so log rotation without stopping the daemon is will\n");
 		fprintf(output, "                    not work.  The value of \"-\" indicates that standard output\n");
 		fprintf(output, "                    should be used for logging.  The default is \"%s\".\n", LOG_FILE);
+#ifdef FILED_DONT_LOG
+		fprintf(output, "                    Note that logging is completely disabled so this option does\n");
+		fprintf(output, "                    nothing in this build.\n");
+#endif
 		fprintf(output, "\n");
 		fprintf(output, "      -u (or --user) specifies the user to switch user IDs to before servicing\n");
 		fprintf(output, "                     requests.  The default is not change user IDs.\n");
