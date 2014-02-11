@@ -559,13 +559,11 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_http_request *buffer_st) {
 	char *method, *path;
 	char *buffer, *workbuffer, *workbuffer_next;
+	char *fgets_ret;
 	size_t buffer_len;
 	off_t range_start, range_end, range_length;
 	int range_request;
-	int fd;
 	int i;
-
-	fd = fileno(fp);
 
 	range_start = 0;
 	range_end   = 0;
@@ -575,7 +573,10 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	buffer = buffer_st->tmpbuf;
 	buffer_len = sizeof(buffer_st->tmpbuf);
 
-	fgets(buffer, buffer_len, fp);
+	fgets_ret = fgets(buffer, buffer_len, fp);
+	if (fgets_ret == NULL) {
+		return(NULL);
+	}
 
 	method = buffer;
 
@@ -606,6 +607,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	for (i = 0; i < 100; i++) {
 		buffer = buffer_st->tmpbuf;
 		fgets(buffer, buffer_len, fp);
+		if (fgets_ret == NULL) {
+			break;
+		}
 
 		if (strncasecmp(buffer, "Range: ", 7) == 0) {
 			workbuffer = buffer + 7;
@@ -655,9 +659,6 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	buffer_st->headers.range.length  = range_length;
 
 	return(buffer_st);
-
-	/* Make compiler happy */
-	fd = fd;
 }
 
 /* Return an error page */
