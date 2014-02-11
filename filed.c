@@ -52,6 +52,7 @@ struct filed_fileinfo {
 	char *lastmod;
 	char lastmod_b[64];
 	const char *type;
+	char etag[64];
 };
 
 /* Request variables */
@@ -158,7 +159,9 @@ static int filed_init_cache(unsigned int cache_size) {
 /* Initialize process */
 static int filed_init(unsigned int cache_size) {
 	static int called = 0;
+	unsigned int random_value = 0;
 	int cache_ret;
+	int random_fd;
 
 	if (called) {
 		return(0);
@@ -166,14 +169,31 @@ static int filed_init(unsigned int cache_size) {
 
 	called = 1;
 
+	/* Attempt to lock all memory to physical RAM (but don't care if we can't) */
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 
+	/* Ignore SIGPIPE */
 	signal(SIGPIPE, SIG_IGN);
 
+	/* Initialize cache structure */
 	cache_ret = filed_init_cache(cache_size);
 	if (cache_ret != 0) {
 		return(cache_ret);
 	}
+
+	/* Initialize random number generator */
+	random_fd = open("/dev/urandom", O_RDONLY);
+	if (random_fd >= 0) {
+		read(random_fd, &random_value, sizeof(random_value));
+
+		close(random_fd);
+	}
+
+	random_value ^= getpid();
+	random_value ^= getuid();
+	random_value ^= time(NULL);
+
+	srandom(random_value);
 
 	return(0);
 }
@@ -502,6 +522,16 @@ static const char *filed_determine_mimetype(const char *path) {
 	return(FILED_DEFAULT_TYPE);
 }
 
+/* Generate a unique identifier */
+static void filed_generate_etag(char *etag, size_t length) {
+	snprintf(etag, length, "%llx%llx%llx%llx",
+		(unsigned long long) random(),
+		(unsigned long long) random(),
+		(unsigned long long) random(),
+		(unsigned long long) random()
+	);
+}
+
 /* Open a file and return file information */
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
 	struct filed_fileinfo *cache;
@@ -548,6 +578,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->len = len;
 		strcpy(cache->path, path);
 		cache->type = filed_determine_mimetype(open_path);
+		filed_generate_etag(cache->etag, sizeof(cache->etag));
 
 		/* XXX:TODO: Determine */
 		cache->lastmod = filed_format_time(cache->lastmod_b, sizeof(cache->lastmod_b), time(NULL) - 30);
@@ -570,6 +601,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	buffer->len = cache->len;
 	buffer->type = cache->type;
 	memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
+	memcpy(buffer->etag, cache->etag, sizeof(buffer->etag));
 	buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
 
 	pthread_mutex_unlock(&cache->mutex);
@@ -798,12 +830,13 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 		}
 
 		if (http_code > 0) {
-			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\n",
+			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\nETag: \"%s\"\r\n",
 				http_code,
 				date_current,
 				fileinfo->lastmod,
 				(unsigned long long) request->headers.range.length,
-				fileinfo->type
+				fileinfo->type,
+				fileinfo->etag
 			);
 			if (http_code == 206) {
 				fprintf(fp, "Content-Range: bytes %llu-%llu/%llu\r\n",
