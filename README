@@ -76,3 +76,13 @@ following tunables that can only be toggled during compile-time:
 	desirable to use your own mapping rather than the default one.  This
 	can be done by specifying the MIMETYPES macro to "make".  If no
 	mapping is desired, "/dev/null" may be specified.
+
+Log Files
+---------
+Because "filed" relies on chroot(2) and setuid(2), log files cannot reliably
+be re-opened.  If you need log rotation a second process, which can close and
+re-open log files, must be used.  Any process may be used for writing logs to
+but if the process does not support log rotation it will not provide that
+benefit.  For example, if you wish to write logs to syslogd(8) you can use
+logger(1), such as:
+	# ./filed --root /www --user nobody --log '|logger -t filed' --daemon
