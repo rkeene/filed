@@ -24,6 +24,7 @@
 #define FILED_SENDFILE_MAX 16777215
 #define FILED_MAX_FAILURE_COUNT 30
 #define FILED_DEFAULT_TYPE "application/octet-stream"
+#define FILED_PATH_BUFFER_SIZE 1010
 
 /* Default values */
 #define PORT 80
@@ -57,7 +58,7 @@ struct filed_fileinfo {
 struct filed_http_request {
 	/** Buffers **/
 	struct filed_fileinfo fileinfo;
-	char path_b[1010];
+	char path_b[FILED_PATH_BUFFER_SIZE];
 	char tmpbuf[1010];
 
 	/** HTTP Request information **/
@@ -74,11 +75,34 @@ struct filed_http_request {
 
 /* Log record */
 struct filed_log_entry {
+	/* Type of log entry */
+	enum {
+		FILED_LOG_TYPE_MESSAGE,
+		FILED_LOG_TYPE_TRANSFER
+	} type;
+
+	/* Linked list head/tail */
 	struct filed_log_entry *_next;
 	struct filed_log_entry *_prev;
+
+	/* Thread from which this log entry eminates */
 	pthread_t thread;
-	char buffer[1010];
-	int level;
+
+	/* Message buffer for type = MESSAGE */
+	/* Path buffer for type = TRANSFER */
+	char buffer[FILED_PATH_BUFFER_SIZE];
+
+	/* Items for type = TRANSFER */
+	int http_code;
+	const char *reason;
+	time_t starttime;
+	time_t endtime;
+	off_t req_offset;
+	off_t req_length;
+	off_t sent_length;
+	off_t file_length;
+	char ip[128];
+	int port;
 };
 
 /* Global variables */
@@ -206,10 +230,13 @@ static int filed_listen(const char *address, unsigned int port) {
 
 /* Log a message */
 #ifdef FILED_DONT_LOG
+struct filed_log_entry filed_dummy_log_entry;
 #  define filed_logging_thread_init(x) 0
 #  define filed_log_msg_debug(x, ...) /**/
 #  define filed_log_msg(x, ...) /**/
-#  define filed_log_ip(x, ...) "<unknown>"
+#  define filed_log_entry(x) /**/
+#  define filed_log_ip(x, ...) NULL
+#  define filed_log_new(x) &filed_dummy_log_entry
 #else
 #ifdef FILED_DEBUG
 #  define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -248,8 +275,31 @@ static void *filed_logging_thread(void *arg_p) {
 
 		curr = prev;
 		while (curr) {
-			fprintf(fp, "%s THREAD=%llu TIME=%llu\n",
-				curr->buffer,
+			switch (curr->type) {
+				case FILED_LOG_TYPE_MESSAGE:
+					fprintf(fp, "%s", curr->buffer);
+
+					break;
+				case FILED_LOG_TYPE_TRANSFER:
+					if (curr->endtime == ((time_t) -1)) {
+						curr->endtime = now;
+					}
+
+					fprintf(fp, "TRANSFER PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+						curr->buffer,
+						curr->ip, curr->port,
+						(unsigned long long) curr->starttime,
+						(unsigned long long) curr->endtime,
+						curr->http_code, curr->reason,
+						(unsigned long long) curr->req_offset,
+						(unsigned long long) curr->req_length,
+						(unsigned long long) curr->file_length,
+						(unsigned long long) curr->sent_length
+					);
+
+					break;
+			}
+			fprintf(fp, " THREAD=%llu TIME=%llu\n",
 				(unsigned long long) curr->thread,
 				(unsigned long long) now
 			);
@@ -265,20 +315,8 @@ static void *filed_logging_thread(void *arg_p) {
 	return(NULL);
 }
 
-static void filed_log_msg(const char *fmt, ...) {
-	struct filed_log_entry *entry;
-	va_list args;
-
-	entry = malloc(sizeof(*entry));
-
-	va_start(args, fmt);
-
-	vsnprintf(entry->buffer, sizeof(entry->buffer), fmt, args);
-
-	va_end(args);
-
+static void filed_log_entry(struct filed_log_entry *entry) {
 	entry->thread = pthread_self();
-	entry->level = 0;
 
 	pthread_mutex_lock(&filed_log_msg_list_mutex);
 
@@ -288,6 +326,46 @@ static void filed_log_msg(const char *fmt, ...) {
 	pthread_mutex_unlock(&filed_log_msg_list_mutex);
 
 	pthread_cond_signal(&filed_log_msg_list_ready);
+
+	return;
+}
+
+static struct filed_log_entry *filed_log_new(int initialize) {
+	struct filed_log_entry *retval;
+
+	retval = malloc(sizeof(*retval));
+
+	if (initialize) {
+		retval->buffer[0] = '\0';
+		retval->http_code = -1;
+		retval->starttime = 0;
+		retval->endtime = 0;
+		retval->req_offset = 0;
+		retval->req_length = 0;
+		retval->sent_length = 0;
+		retval->file_length = 0;
+		retval->ip[0] = '\0';
+		retval->port = -1;
+	}
+
+	return(retval);
+}
+
+static void filed_log_msg(const char *fmt, ...) {
+	struct filed_log_entry *entry;
+	va_list args;
+
+	entry = filed_log_new(0);
+
+	va_start(args, fmt);
+
+	vsnprintf(entry->buffer, sizeof(entry->buffer), fmt, args);
+
+	va_end(args);
+
+	entry->type = FILED_LOG_TYPE_MESSAGE;
+
+	filed_log_entry(entry);
 
 	return;
 }
@@ -307,10 +385,6 @@ static const char *filed_log_ip(struct sockaddr *addr, char *buffer, size_t buff
 		case AF_INET6:
 			retval = inet_ntop(AF_INET6, &addr_v6->sin6_addr, buffer, bufferlen);
 			break;
-	}
-
-	if (retval == NULL) {
-		retval = "<unknown>";
 	}
 
 	return(retval);
@@ -506,16 +580,12 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	tmpbuffer = buffer_st->tmpbuf;
 	tmpbuffer_len = sizeof(buffer_st->tmpbuf);
 
-	filed_log_msg("WAIT_FOR_REQUEST FD=%i", fd);
-
 	fgets(buffer, buffer_len, fp);
 
 	method = buffer;
 
 	buffer = strchr(buffer, ' ');
 	if (buffer == NULL) {
-		filed_log_msg("GOT_REQUEST FD=%i ERROR=format", fd);
-
 		return(NULL);
 	}
 
@@ -529,10 +599,6 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 		*buffer = '\0';
 		buffer++;
 	}
-
-	filed_log_msg("GOT_REQUEST FD=%i PATH=%s", fd, path);
-
-	filed_log_msg("WAIT_FOR_HEADERS FD=%i", fd);
 
 	for (i = 0; i < 100; i++) {
 		fgets(tmpbuffer, tmpbuffer_len, fp);
@@ -563,8 +629,6 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 			break;
 		}
 	}
-
-	filed_log_msg("GOT_HEADERS FD=%i", fd);
 
 	/* We only handle the "GET" method */
 	if (strcasecmp(method, "get") != 0) {
@@ -613,7 +677,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 }
 
 /* Handle a single request from a client */
-static void filed_handle_client(int fd, struct filed_http_request *request) {
+static void filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
 	size_t sendfile_size;
@@ -639,25 +703,19 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 	if (request == NULL || request->path == NULL) {
 		filed_error_page(fp, date_current, 500);
 
-		filed_log_msg("INVALID_REQUEST FD=%i ERROR=500", fd);
+		log->buffer[0] = '\0';
+		log->http_code = 500;
+		log->reason = "format";
+
+		filed_log_entry(log);
 
 		fclose(fp);
 
 		return;
 	}
 
-	if (request->headers.range.present) {
-		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s RANGE_START=%llu RANGE_LENGTH=%lli",
-			fd,
-			request->path,
-			(unsigned long long) request->headers.range.offset,
-			(long long) request->headers.range.length
-		);
-	} else {
-		filed_log_msg("PROCESS_REPLY_START FD=%i PATH=%s", fd, request->path);
-	}
-
 	path = request->path;
+	strcpy(log->buffer, path);
 
 	http_code = -1;
 
@@ -665,13 +723,19 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404);
 
-		filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i ERROR=404", fd);
+		log->http_code = 404;
+		log->reason = "open_failed";
+
+		filed_log_entry(log);
 	} else {
 		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
 			if (request->headers.range.offset >= fileinfo->len) {
-				filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i ERROR=416", fd);
-
 				filed_error_page(fp, date_current, 416);
+
+				log->http_code = 416;
+				log->reason = "range_invalid";
+
+				filed_log_entry(log);
 			} else {
 				if (request->headers.range.length == ((off_t) -1)) {
 					filed_log_msg_debug("Computing length to fit in bounds: fileinfo->len = %llu, request->headers.range.offset = %llu",
@@ -717,7 +781,12 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			fprintf(fp, "\r\n");
 			fflush(fp);
 
-			filed_log_msg("PROCESS_REPLY_COMPLETE FD=%i STATUS=%i", fd, http_code);
+			log->http_code = http_code;
+			log->reason = "OK";
+			log->starttime = time(NULL);
+			log->req_offset = request->headers.range.offset;
+			log->req_length = request->headers.range.length;
+			log->file_length = fileinfo->len;
 
 #ifdef FILED_NONBLOCK_HTTP
 			int socket_flags;
@@ -733,13 +802,6 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 			socket_flags = fcntl(fd, F_GETFL);
 			fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK);
 #endif
-
-			filed_log_msg("SEND_START FILE_FD=%i FD=%i BYTES=%llu OFFSET=%llu",
-				fileinfo->fd,
-				fd,
-				(unsigned long long) request->headers.range.length,
-				(unsigned long long) request->headers.range.offset
-			);
 
 			sendfile_offset = request->headers.range.offset;
 			sendfile_len = request->headers.range.length;
@@ -792,21 +854,14 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 				}
 			}
 
-			filed_log_msg("SEND_COMPLETE STATUS=%s FILE_FD=%i FD=%i BYTES=%llu BYTES_SENT=%llu",
-				(sendfile_sent == request->headers.range.length) ? "OK" : "PARTIAL",
-				fileinfo->fd,
-				fd,
-				(unsigned long long) request->headers.range.length,
-				(unsigned long long) sendfile_sent
-			);
+			log->endtime = (time_t) -1;
+			log->sent_length = sendfile_sent;
+
+			filed_log_entry(log);
 		}
 
 		close(fileinfo->fd);
-
-		filed_log_msg("CLOSE_FILE FD=%i", fd);
 	}
-
-	filed_log_msg("CLOSE_CONNECTION FD=%i", fd);
 
 	fclose(fp);
 
@@ -817,6 +872,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request) {
 static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct filed_http_request request;
+	struct filed_log_entry *log;
 	struct sockaddr_in6 addr;
 	char logbuf_ip[128];
 	socklen_t addrlen;
@@ -852,17 +908,24 @@ static void *filed_worker_thread(void *arg_v) {
 		}
 
 		/* Log the new connection */
-		filed_log_msg("NEW_CONNECTION SRC_ADDR=%s SRC_PORT=%lu FD=%i",
-			filed_log_ip((struct sockaddr *) &addr, logbuf_ip, sizeof(logbuf_ip)),
-			(unsigned long) addr.sin6_port,
-			fd
-		);
+		log = filed_log_new(1);
+		if (log == NULL) {
+			close(fd);
+
+			continue;
+		}
+
+		log->type = FILED_LOG_TYPE_TRANSFER;
+		if (filed_log_ip((struct sockaddr *) &addr, log->ip, sizeof(log->ip)) == NULL) {
+			log->ip[0] = '\0';
+		}
+		log->port = addr.sin6_port;
 
 		/* Reset failure count*/
 		failure_count = 0;
 
 		/* Handle socket */
-		filed_handle_client(fd, &request);
+		filed_handle_client(fd, &request, log);
 	}
 
 	/* Report error */
