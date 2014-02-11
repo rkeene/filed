@@ -238,11 +238,11 @@ struct filed_log_entry filed_dummy_log_entry;
 #  define filed_log_ip(x, ...) NULL
 #  define filed_log_new(x) &filed_dummy_log_entry
 #else
-#ifdef FILED_DEBUG
-#  define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
-#else
-#  define filed_log_msg_debug(x, ...) /**/
-#endif
+#  ifdef FILED_DEBUG
+#    define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
+#  else
+#    define filed_log_msg_debug(x, ...) /**/
+#  endif
 
 /* Initialize logging thread */
 static void *filed_logging_thread(void *arg_p) {
