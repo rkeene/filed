@@ -79,7 +79,9 @@ The log file is opened before switching users (see "-u")
 and root directories (see "-r").  The log file is never
 closed so log rotation without stopping the daemon is will
 not work.  The value of "-" indicates that standard output
-should be used for logging.
+should be used for logging.  If the filename begins with a "|"
+then a process is started and used for logging instead of a
+file.
 
 .TP
 .B -u (or --user)
