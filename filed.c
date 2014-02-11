@@ -230,13 +230,12 @@ static int filed_listen(const char *address, unsigned int port) {
 
 /* Log a message */
 #ifdef FILED_DONT_LOG
-struct filed_log_entry filed_dummy_log_entry;
 #  define filed_logging_thread_init(x) 0
 #  define filed_log_msg_debug(x, ...) /**/
 #  define filed_log_msg(x, ...) /**/
 #  define filed_log_entry(x) /**/
 #  define filed_log_ip(x, ...) NULL
-#  define filed_log_new(x) &filed_dummy_log_entry
+#  define filed_log_new(x) &local_dummy_log
 #else
 #  ifdef FILED_DEBUG
 #    define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -872,9 +871,8 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct filed_http_request request;
-	struct filed_log_entry *log;
+	struct filed_log_entry *log, local_dummy_log;
 	struct sockaddr_in6 addr;
-	char logbuf_ip[128];
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
 	int master_fd, fd;
@@ -933,10 +931,9 @@ static void *filed_worker_thread(void *arg_v) {
 
 	return(NULL);
 
-	/* Make compiler happy */
-	logbuf_ip[0] = '\0';
-	logbuf_ip[0] = logbuf_ip[0];
-
+	/* local_dummy_log is only used if FILED_DONT_LOG is anebled, otherwise it's not used, but the compiler hates that idea. */
+	local_dummy_log.type = 0;
+	local_dummy_log.type = local_dummy_log.type;
 }
 
 /* Create worker threads */
