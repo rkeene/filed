@@ -782,6 +782,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	path = request->path;
 	strcpy(log->buffer, path);
+	log->method = request->method;
 
 	http_code = -1;
 
@@ -854,7 +855,6 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 			log->req_offset = request->headers.range.offset;
 			log->req_length = request->headers.range.length;
 			log->file_length = fileinfo->len;
-			log->method = request->method;
 
 #ifdef FILED_NONBLOCK_HTTP
 			int socket_flags;
