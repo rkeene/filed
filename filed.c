@@ -263,6 +263,7 @@ static int filed_listen(const char *address, unsigned int port) {
 #  define filed_log_entry(x) /**/
 #  define filed_log_ip(x, ...) NULL
 #  define filed_log_new(x) &local_dummy_log
+#  define filed_log_open(x) stdout
 #else
 #  ifdef FILED_DEBUG
 #    define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -426,6 +427,18 @@ static const char *filed_log_ip(struct sockaddr *addr, char *buffer, size_t buff
 		case AF_INET6:
 			retval = inet_ntop(AF_INET6, &addr_v6->sin6_addr, buffer, bufferlen);
 			break;
+	}
+
+	return(retval);
+}
+
+static FILE *filed_log_open(const char *file) {
+	FILE *retval;
+
+	if (strcmp(file, "-") == 0) {
+		retval = stdout;
+	} else {
+		retval = fopen(file, "a+");
 	}
 
 	return(retval);
@@ -1275,15 +1288,11 @@ int main(int argc, char **argv) {
 	}
 
 	/* Open log file */
-	if (strcmp(log_file, "-") == 0) {
-		log_fp = stdout;
-	} else {
-		log_fp = fopen(log_file, "a+");
-		if (log_fp == NULL) {
-			perror("fopen");
+	log_fp = filed_log_open(log_file);
+	if (log_fp == NULL) {
+		perror("filed_log_open");
 
-			return(4);
-		}
+		return(4);
 	}
 
 	/* Create listening socket */
