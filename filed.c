@@ -606,7 +606,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 
 	for (i = 0; i < 100; i++) {
 		buffer = buffer_st->tmpbuf;
-		fgets(buffer, buffer_len, fp);
+		fgets_ret = fgets(buffer, buffer_len, fp);
 		if (fgets_ret == NULL) {
 			break;
 		}
