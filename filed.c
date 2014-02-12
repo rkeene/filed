@@ -683,6 +683,9 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	/* Note path */
 	strcpy(buffer_st->path, path);
 
+	/* Reset buffer for later use */
+	buffer = buffer_st->tmpbuf;
+
 	for (i = 0; i < 100; i++) {
 		fgets_ret = fgets(buffer, buffer_len, fp);
 		if (fgets_ret == NULL) {
