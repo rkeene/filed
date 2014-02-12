@@ -1,5 +1,5 @@
 .PU
-.TH FILED 1 "11 Feb 14" "filed 1.5"
+.TH FILED 1 "12 Feb 14" "filed 1.6"
 .SH NAME
 filed \- serve files over HTTP
 .SH SYNOPSIS
@@ -79,9 +79,9 @@ The log file is opened before switching users (see "-u")
 and root directories (see "-r").  The log file is never
 closed so log rotation without stopping the daemon is will
 not work.  The value of "-" indicates that standard output
-should be used for logging.  If the filename begins with a "|"
-then a process is started and used for logging instead of a
-file.
+should be used for logging.  If the filename begins with a
+pipe ("|") then a process is started and used for logging
+instead of a file.
 
 .TP
 .B -u (or --user)
