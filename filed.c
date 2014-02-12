@@ -540,7 +540,8 @@ static const char *filed_determine_mimetype(const char *path) {
 
 /* Generate a unique identifier */
 static void filed_generate_etag(char *etag, size_t length) {
-	snprintf(etag, length, "%llx%llx%llx%llx",
+	snprintf(etag, length, "%llx-%llx%llx%llx%llx",
+		(unsigned long long) time(NULL),
 		(unsigned long long) random(),
 		(unsigned long long) random(),
 		(unsigned long long) random(),
