@@ -661,7 +661,8 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 
 	path = buffer;
 
-	buffer = strchr(buffer, ' ');
+	/* Terminate path component */
+	buffer = strstr(buffer, "\r\n ");
 	if (buffer != NULL) {
 		*buffer = '\0';
 		buffer++;
