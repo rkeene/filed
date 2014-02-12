@@ -1096,9 +1096,9 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "                    and root directories (see \"-r\").  The log file is never\n");
 		fprintf(output, "                    closed so log rotation without stopping the daemon is will\n");
 		fprintf(output, "                    not work.  The value of \"-\" indicates that standard output\n");
-		fprintf(output, "                    should be used for logging.  If the filename begins with a \"|\"\n");
-		fprintf(output, "                    then a process is started and used for logging instead of a\n");
-		fprintf(output, "                    file.  The default is \"%s\".\n", LOG_FILE);
+		fprintf(output, "                    should be used for logging.  If the filename begins with a\n");
+		fprintf(output, "                    pipe (\"|\") then a process is started and used for logging\n");
+		fprintf(output, "                    instead of a file.  The default is \"%s\".\n", LOG_FILE);
 #ifdef FILED_DONT_LOG
 		fprintf(output, "                    Note that logging is completely disabled so this option does\n");
 		fprintf(output, "                    nothing in this build.\n");
