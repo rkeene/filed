@@ -77,6 +77,12 @@ struct filed_http_request {
 	/*** Path being requested ***/
 	char path[FILED_PATH_BUFFER_SIZE]; 
 
+	/*** Path type ***/
+	enum {
+		FILED_REQUEST_TYPE_DIRECTORY,
+		FILED_REQUEST_TYPE_OTHER
+	} type;
+
 	struct {
 		struct {
 			int present;
@@ -634,7 +640,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	char *method, *path;
 	char *buffer, *workbuffer, *workbuffer_next;
 	char *fgets_ret;
-	size_t buffer_len;
+	size_t buffer_len, path_len;
 	off_t range_start, range_end, range_length;
 	int range_request;
 	int snprintf_ret;
@@ -688,7 +694,19 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	}
 
 	/* Note path */
-	strcpy(buffer_st->path, path);
+	path_len = strlen(path);
+	memcpy(buffer_st->path, path, path_len + 1);
+
+	/* Determine type of request from path */
+	if (path_len == 0) {
+		buffer_st->type = FILED_REQUEST_TYPE_DIRECTORY;
+	} else {
+		if (path[path_len - 1] == '/') {
+			buffer_st->type = FILED_REQUEST_TYPE_DIRECTORY;
+		} else {
+			buffer_st->type = FILED_REQUEST_TYPE_OTHER;
+		}
+	}
 
 	/* Reset buffer for later use */
 	buffer = buffer_st->tmpbuf;
@@ -783,7 +801,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 }
 
 /* Return an error page */
-static void filed_error_page(FILE *fp, const char *date_current, int error_number, int method) {
+static void filed_error_page(FILE *fp, const char *date_current, int error_number, int method, const char *reason, struct filed_log_entry *log) {
 	char *error_string = "<html><head><title>ERROR</title></head><body>Unable to process request</body></html>";
 
 	fprintf(fp, "HTTP/1.1 %i Not OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
@@ -799,7 +817,42 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 		fprintf(fp, "%s", error_string);
 	}
 
+	/* Log error */
+	/** reason must point to a globally allocated value **/
+	log->reason = reason;
+	log->http_code = error_number;
+
+	filed_log_entry(log);
+
+	/* Close connection */
+	fclose(fp);
+
 	return;
+}
+
+/* Return a redirect to index.html */
+static void filed_redirect_index(FILE *fp, const char *date_current, const char *path, struct filed_log_entry *log) {
+	int http_code = 301;
+	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: 0\r\nConnection: close\r\nLocation: %s\r\n\r\n",
+		http_code,
+		date_current,
+		date_current,
+		"index.html"
+	);
+
+	/* Log redirect */
+	log->reason = "redirect";
+	log->http_code = http_code;
+
+	filed_log_entry(log);
+
+	/* Close connection */
+	fclose(fp);
+
+	return;
+
+	/* Currently unused: path */
+	path = path;
 }
 
 /* Handle a single request from a client */
@@ -833,15 +886,9 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	request = filed_get_http_request(fp, request, options);
 
 	if (request == NULL) {
-		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET);
-
 		log->buffer[0] = '\0';
-		log->http_code = 500;
-		log->reason = "format";
 
-		filed_log_entry(log);
-
-		fclose(fp);
+		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET, "format", log);
 
 		return;
 	}
@@ -850,152 +897,152 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	strcpy(log->buffer, path);
 	log->method = request->method;
 
-	http_code = -1;
+	/* If the requested path is a directory, redirect to index page */
+	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
+		filed_redirect_index(fp, date_current, path, log);
+
+		return;
+	}
 
 	fileinfo = filed_open_file(path, &request->fileinfo);
 	if (fileinfo == NULL) {
-		filed_error_page(fp, date_current, 404, request->method);
+		filed_error_page(fp, date_current, 404, request->method, "open_failed", log);
 
-		log->http_code = 404;
-		log->reason = "open_failed";
+		return;
+	}
 
-		filed_log_entry(log);
-	} else {
+	if (request->headers.range.present) {
 		if (request->headers.range.offset != 0 || request->headers.range.length >= 0) {
 			if (request->headers.range.offset >= fileinfo->len) {
-				filed_error_page(fp, date_current, 416, request->method);
+				filed_error_page(fp, date_current, 416, request->method, "range_invalid", log);
 
-				log->http_code = 416;
-				log->reason = "range_invalid";
+				close(fileinfo->fd);
 
-				filed_log_entry(log);
-			} else {
-				if (request->headers.range.length == ((off_t) -1)) {
-					filed_log_msg_debug("Computing length to fit in bounds: fileinfo->len = %llu, request->headers.range.offset = %llu",
-						(unsigned long long) fileinfo->len,
-						(unsigned long long) request->headers.range.offset
-					);
+				return;
+			}
 
-					request->headers.range.length = fileinfo->len - request->headers.range.offset;
-				}
-
-				filed_log_msg_debug("Partial request, starting at: %llu and running for %lli bytes",
-					(unsigned long long) request->headers.range.offset,
-					(long long) request->headers.range.length
+			if (request->headers.range.length == ((off_t) -1)) {
+				filed_log_msg_debug("Computing length to fit in bounds: fileinfo->len = %llu, request->headers.range.offset = %llu",
+					(unsigned long long) fileinfo->len,
+					(unsigned long long) request->headers.range.offset
 				);
 
-				http_code = 206;
+				request->headers.range.length = fileinfo->len - request->headers.range.offset;
 			}
-		} else {
-			if (request->headers.range.present) {
-				http_code = 206;
-			} else {
-				http_code = 200;
-			}
-			request->headers.range.offset = 0;
-			request->headers.range.length = fileinfo->len;
+
+			filed_log_msg_debug("Partial request, starting at: %llu and running for %lli bytes",
+				(unsigned long long) request->headers.range.offset,
+				(long long) request->headers.range.length
+			);
+
 		}
 
-		if (http_code > 0) {
-			fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\nETag: \"%s\"\r\n",
-				http_code,
-				date_current,
-				fileinfo->lastmod,
-				(unsigned long long) request->headers.range.length,
-				fileinfo->type,
-				fileinfo->etag
-			);
-			if (http_code == 206) {
-				fprintf(fp, "Content-Range: bytes %llu-%llu/%llu\r\n",
-					(unsigned long long) request->headers.range.offset,
-					(unsigned long long) (request->headers.range.offset + request->headers.range.length - 1),
-					(unsigned long long) fileinfo->len
-				);
-			}
-			fprintf(fp, "\r\n");
-			fflush(fp);
+		http_code = 206;
+	} else {
+		http_code = 200;
 
-			log->http_code = http_code;
-			log->reason = "OK";
-			log->starttime = time(NULL);
-			log->req_offset = request->headers.range.offset;
-			log->req_length = request->headers.range.length;
-			log->file_length = fileinfo->len;
+		/* Compute fake range parameters that includes the entire file */
+		request->headers.range.offset = 0;
+		request->headers.range.length = fileinfo->len;
+	}
+
+	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\nETag: \"%s\"\r\n",
+		http_code,
+		date_current,
+		fileinfo->lastmod,
+		(unsigned long long) request->headers.range.length,
+		fileinfo->type,
+		fileinfo->etag
+	);
+
+	if (http_code == 206) {
+		fprintf(fp, "Content-Range: bytes %llu-%llu/%llu\r\n",
+			(unsigned long long) request->headers.range.offset,
+			(unsigned long long) (request->headers.range.offset + request->headers.range.length - 1),
+			(unsigned long long) fileinfo->len
+		);
+	}
+	fprintf(fp, "\r\n");
+	fflush(fp);
+
+	log->http_code = http_code;
+	log->reason = "OK";
+	log->starttime = time(NULL);
+	log->req_offset = request->headers.range.offset;
+	log->req_length = request->headers.range.length;
+	log->file_length = fileinfo->len;
 
 #ifdef FILED_NONBLOCK_HTTP
-			int socket_flags;
-			fd_set rfd, wfd;
-			char sinkbuf[8192];
-			ssize_t read_ret;
+	int socket_flags;
+	fd_set rfd, wfd;
+	char sinkbuf[8192];
+	ssize_t read_ret;
 
-			FD_ZERO(&rfd);
-			FD_ZERO(&wfd);
-			FD_SET(fd, &rfd);
-			FD_SET(fd, &wfd);
+	FD_ZERO(&rfd);
+	FD_ZERO(&wfd);
+	FD_SET(fd, &rfd);
+	FD_SET(fd, &wfd);
 
-			socket_flags = fcntl(fd, F_GETFL);
-			fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK);
+	socket_flags = fcntl(fd, F_GETFL);
+	fcntl(fd, F_SETFL, socket_flags | O_NONBLOCK);
 #endif
+	sendfile_offset = request->headers.range.offset;
+	sendfile_len = request->headers.range.length;
+	sendfile_sent = 0;
+	while (request->method == FILED_REQUEST_METHOD_GET) {
+		if (sendfile_len > FILED_SENDFILE_MAX) {
+			sendfile_size = FILED_SENDFILE_MAX;
+		} else {
+			sendfile_size = sendfile_len;
+		}
 
-			sendfile_offset = request->headers.range.offset;
-			sendfile_len = request->headers.range.length;
-			sendfile_sent = 0;
-			while (request->method == FILED_REQUEST_METHOD_GET) {
-				if (sendfile_len > FILED_SENDFILE_MAX) {
-					sendfile_size = FILED_SENDFILE_MAX;
-				} else {
-					sendfile_size = sendfile_len;
-				}
-
-				sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_size);
-				if (sendfile_ret <= 0) {
+		sendfile_ret = sendfile(fd, fileinfo->fd, &sendfile_offset, sendfile_size);
+		if (sendfile_ret <= 0) {
 #ifdef FILED_NONBLOCK_HTTP
-					if (errno == EAGAIN) {
-						sendfile_ret = 0;
+			if (errno == EAGAIN) {
+				sendfile_ret = 0;
 
-						while (1) {
-							select(fd + 1, &rfd, &wfd, NULL, NULL);
-							if (FD_ISSET(fd, &rfd)) {
-								read_ret = read(fd, sinkbuf, sizeof(sinkbuf));
-
-								if (read_ret <= 0) {
-									break;
-								}
-							}
-
-							if (FD_ISSET(fd, &wfd)) {
-								read_ret = 1;
-
-								break;
-							}
-						}
+				while (1) {
+					select(fd + 1, &rfd, &wfd, NULL, NULL);
+					if (FD_ISSET(fd, &rfd)) {
+						read_ret = read(fd, sinkbuf, sizeof(sinkbuf));
 
 						if (read_ret <= 0) {
 							break;
 						}
-					} else {
+					}
+
+					if (FD_ISSET(fd, &wfd)) {
+						read_ret = 1;
+
 						break;
 					}
-#else
-					break;
-#endif
 				}
 
-				sendfile_len -= sendfile_ret;
-				sendfile_sent += sendfile_ret;
-				if (sendfile_len == 0) {
+				if (read_ret <= 0) {
 					break;
 				}
+			} else {
+				break;
 			}
-
-			log->endtime = (time_t) -1;
-			log->sent_length = sendfile_sent;
-
-			filed_log_entry(log);
+#else
+			break;
+#endif
 		}
 
-		close(fileinfo->fd);
+		sendfile_len -= sendfile_ret;
+		sendfile_sent += sendfile_ret;
+		if (sendfile_len == 0) {
+			break;
+		}
 	}
+
+	log->endtime = (time_t) -1;
+	log->sent_length = sendfile_sent;
+
+	filed_log_entry(log);
+
+	close(fileinfo->fd);
 
 	fclose(fp);
 
