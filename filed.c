@@ -1027,6 +1027,16 @@ static void *filed_worker_thread(void *arg_v) {
 			break;
 		}
 
+		/* Allocate a new log buffer */
+		log = filed_log_new(1);
+		if (log == NULL) {
+			filed_log_msg("ALLOCATE_LOG_MSG_FAILED");
+
+			break;
+		}
+
+		log->type = FILED_LOG_TYPE_TRANSFER;
+
 		/* Accept a new client */
 		addrlen = sizeof(addr);
 		fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
@@ -1044,19 +1054,13 @@ static void *filed_worker_thread(void *arg_v) {
 			continue;
 		}
 
-		/* Log the new connection */
-		log = filed_log_new(1);
-		if (log == NULL) {
-			close(fd);
-
-			continue;
-		}
-
-		log->type = FILED_LOG_TYPE_TRANSFER;
+		/* Fill in log structure */
 		if (filed_log_ip((struct sockaddr *) &addr, log->ip, sizeof(log->ip)) == NULL) {
 			log->ip[0] = '\0';
+			log->port = 0;
+		} else {
+			log->port = addr.sin6_port;
 		}
-		log->port = addr.sin6_port;
 
 		/* Reset failure count*/
 		failure_count = 0;
