@@ -563,7 +563,6 @@ static void filed_generate_etag(char *etag, size_t length) {
 /* Open a file and return file information */
 static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
 	struct filed_fileinfo *cache;
-	const char *open_path;
 	unsigned int cache_idx;
 	off_t len;
 	int fd;
@@ -581,14 +580,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
-		/* For requests for the root directory, serve out index.html */
-		if (path[0] == '\0' || (path[0] == '/' && path[1] == '\0')) {
-			open_path = "/index.html";
-		} else {
-			open_path = path;
-		}
-
-		fd = open(open_path, O_RDONLY | O_LARGEFILE);
+		fd = open(path, O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
 			pthread_mutex_unlock(&cache->mutex);
 
@@ -605,7 +597,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		cache->fd = fd;
 		cache->len = len;
 		strcpy(cache->path, path);
-		cache->type = filed_determine_mimetype(open_path);
+		cache->type = filed_determine_mimetype(path);
 		filed_generate_etag(cache->etag, sizeof(cache->etag));
 
 		/* XXX:TODO: Determine */
