@@ -829,7 +829,11 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	if (fp == NULL) {
 		close(fd);
 
-		free(log);
+		log->buffer[0] = '\0';
+		log->http_code = -1;
+		log->reason = "fdopen_failed";
+
+		filed_log_entry(log);
 
 		return;
 	}
