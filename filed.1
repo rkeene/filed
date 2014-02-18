@@ -8,6 +8,7 @@ filed \- serve files over HTTP
 .RB [{ \-h | \-\-help }]
 .RB [{ \-d | \-\-daemon }]
 .RB [{ \-v | \-\-version }]
+.RB [{ \-V | \-\-vhost }]
 .RB [{ \-b | \-\-bind }
 .IR address ]
 .RB [{ \-p | \-\-port }
@@ -45,6 +46,11 @@ the listening TCP socket and log files.
 Instructs
 .B filed
 to print out its version number and then exit.
+
+.TP
+.B -V (or --vhost)
+instructs filed to prepend all requests with their HTTP
+Host header.
 
 .TP
 .B -b (or --bind)

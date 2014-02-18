@@ -33,9 +33,15 @@
 #define CACHE_SIZE 8209
 #define LOG_FILE "-"
 
+/* Configuration options that work threads need to be aware of */
+struct filed_options {
+	int vhosts_enabled;
+};
+
 /* Arguments for worker threads */
 struct filed_worker_thread_args {
 	int fd;
+	struct filed_options options;
 };
 
 /* Arguments for logging threads */
@@ -59,7 +65,7 @@ struct filed_fileinfo {
 struct filed_http_request {
 	/** Buffers **/
 	struct filed_fileinfo fileinfo;
-	char tmpbuf[1010];
+	char tmpbuf[FILED_PATH_BUFFER_SIZE];
 
 	/** HTTP Request information **/
 	/*** Type of request (HEAD or GET) ***/
@@ -77,6 +83,11 @@ struct filed_http_request {
 			off_t offset;   /*** Range start ***/
 			off_t length;   /*** Range length ***/
 		} range;
+
+		struct {
+			int present;
+			char host[FILED_PATH_BUFFER_SIZE];
+		} host;
 	} headers;
 };
 
@@ -627,19 +638,22 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 }
 
 /* Process an HTTP request and return the path requested */
-static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_http_request *buffer_st) {
+static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_http_request *buffer_st, struct filed_options *options) {
 	char *method, *path;
 	char *buffer, *workbuffer, *workbuffer_next;
 	char *fgets_ret;
 	size_t buffer_len;
 	off_t range_start, range_end, range_length;
 	int range_request;
+	int snprintf_ret;
 	int i;
 
+	/* Set to default values */
 	range_start = 0;
 	range_end   = 0;
 	range_request = 0;
 	range_length = -1;
+	buffer_st->headers.host.present = 0;
 
 	buffer = buffer_st->tmpbuf;
 	buffer_len = sizeof(buffer_st->tmpbuf);
@@ -662,7 +676,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	path = buffer;
 
 	/* Terminate path component */
-	buffer = strpbrk(buffer, "\r\n ");
+	buffer = strpbrk(path, "\r\n ");
 	if (buffer != NULL) {
 		*buffer = '\0';
 		buffer++;
@@ -713,6 +727,20 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 					}
 				}
 			}
+		} else if (strncasecmp(buffer, "Host: ", 5) == 0) {
+			buffer_st->headers.host.present = 1;
+
+			workbuffer = strpbrk(buffer + 5, "\r\n:");
+			if (workbuffer != NULL) {
+				*workbuffer = '\0';
+			}
+
+			workbuffer = buffer + 5;
+			while (*workbuffer == ' ') {
+				workbuffer++;
+			}
+
+			strcpy(buffer_st->headers.host.host, workbuffer);
 		}
 
 		if (memcmp(buffer, "\r\n", 2) == 0) {
@@ -740,6 +768,25 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	buffer_st->headers.range.offset  = range_start;
 	buffer_st->headers.range.length  = range_length;
 
+	/* If vhosts are enabled, compute new path */
+	if (options->vhosts_enabled) {
+		if (buffer_st->headers.host.present == 1) {
+			buffer = buffer_st->tmpbuf;
+			buffer_len = sizeof(buffer_st->tmpbuf);
+
+			snprintf_ret = snprintf(buffer, buffer_len, "/%s%s%s",
+				buffer_st->headers.host.host,
+				buffer_st->path[0] == '/' ? "" : "/",
+				buffer_st->path
+			);
+			if (snprintf_ret >= 0) {
+				if (((unsigned int) snprintf_ret) < buffer_len) {
+					strcpy(buffer_st->path, buffer);
+				}
+			}
+		}
+	}
+
 	return(buffer_st);
 }
 
@@ -764,7 +811,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 }
 
 /* Handle a single request from a client */
-static void filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log) {
+static void filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log, struct filed_options *options) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
 	size_t sendfile_size;
@@ -785,7 +832,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 		return;
 	}
 
-	request = filed_get_http_request(fp, request);
+	request = filed_get_http_request(fp, request, options);
 
 	if (request == NULL) {
 		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET);
@@ -962,6 +1009,7 @@ static void *filed_worker_thread(void *arg_v) {
 	struct filed_worker_thread_args *arg;
 	struct filed_http_request request;
 	struct filed_log_entry *log, local_dummy_log;
+	struct filed_options *options;
 	struct sockaddr_in6 addr;
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
@@ -971,6 +1019,7 @@ static void *filed_worker_thread(void *arg_v) {
 	arg = arg_v;
 
 	master_fd = arg->fd;
+	options = &arg->options;
 
 	while (1) {
 		/* Failure loop prevention */
@@ -1013,7 +1062,7 @@ static void *filed_worker_thread(void *arg_v) {
 		failure_count = 0;
 
 		/* Handle socket */
-		filed_handle_client(fd, &request, log);
+		filed_handle_client(fd, &request, log, options);
 	}
 
 	/* Report error */
@@ -1027,7 +1076,7 @@ static void *filed_worker_thread(void *arg_v) {
 }
 
 /* Create worker threads */
-static int filed_worker_threads_init(int fd, int thread_count) {
+static int filed_worker_threads_init(int fd, int thread_count, struct filed_options *options) {
 	struct filed_worker_thread_args *arg;
 	pthread_t threadid;
 	int pthread_ret;
@@ -1037,6 +1086,7 @@ static int filed_worker_threads_init(int fd, int thread_count) {
 		arg = malloc(sizeof(*arg));
 
 		arg->fd = fd;
+		memcpy(&arg->options, options, sizeof(*options));
 
 		pthread_ret = pthread_create(&threadid, NULL, filed_worker_thread, arg);
 		if (pthread_ret != 0) {
@@ -1058,6 +1108,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 	fprintf(output, "      -h, --help\n");
 	fprintf(output, "      -d, --daemon\n");
 	fprintf(output, "      -v, --version\n");
+	fprintf(output, "      -V, --vhost\n");
 	fprintf(output, "      -b <address>, --bind <address>\n");
 	fprintf(output, "      -p <port>, --port <port>\n");
 	fprintf(output, "      -t <count>, --threads <count>\n");
@@ -1075,6 +1126,9 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 		fprintf(output, "                       the listening TCP socket and log files.\n");
 		fprintf(output, "\n");
 		fprintf(output, "      -v (or --version) instructs filed print out the version number and exit.\n");
+		fprintf(output, "\n");
+		fprintf(output, "      -V (or --vhost) instructs filed to prepend all requests with their HTTP\n");
+		fprintf(output, "                      Host header.\n");
 		fprintf(output, "\n");
 		fprintf(output, "      -b (or --bind) specifies the address to listen for incoming HTTP\n");
 		fprintf(output, "                     requests on.  The default value is \"%s\".\n", BIND_ADDR);
@@ -1226,7 +1280,8 @@ static int filed_daemonize(void) {
 
 /* Run process */
 int main(int argc, char **argv) {
-	struct option options[11];
+	struct option options[12];
+	struct filed_options thread_options;
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	FILE *log_fp;
 	uid_t user = 0;
@@ -1236,6 +1291,9 @@ int main(int argc, char **argv) {
 	int setuid_enabled = 0, daemon_enabled = 0;
 	int ch;
 	int fd;
+
+	/* Set default values */
+	thread_options.vhosts_enabled = 0;
 
 	/* Process arguments */
 	filed_getopt_long_setopt(&options[0], "port", required_argument, 'p');
@@ -1248,8 +1306,9 @@ int main(int argc, char **argv) {
 	filed_getopt_long_setopt(&options[7], "daemon", no_argument, 'd');
 	filed_getopt_long_setopt(&options[8], "log", required_argument, 'l');
 	filed_getopt_long_setopt(&options[9], "version", no_argument, 'v');
-	filed_getopt_long_setopt(&options[10], NULL, 0, 0);
-	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:l:hdv", options, NULL)) != -1) {
+	filed_getopt_long_setopt(&options[10], "vhost", no_argument, 'V');
+	filed_getopt_long_setopt(&options[11], NULL, 0, 0);
+	while ((ch = getopt_long(argc, argv, "p:t:c:b:u:r:l:hdvV", options, NULL)) != -1) {
 		switch(ch) {
 			case 'p':
 				port = atoi(optarg);
@@ -1280,6 +1339,10 @@ int main(int argc, char **argv) {
 				break;
 			case 'd':
 				daemon_enabled = 1;
+				break;
+			case 'V':
+				thread_options.vhosts_enabled = 1;
+
 				break;
 			case 'v':
 				printf("filed version %s\n", FILED_VERSION);
@@ -1367,7 +1430,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* Create worker threads */
-	init_ret = filed_worker_threads_init(fd, thread_count);
+	init_ret = filed_worker_threads_init(fd, thread_count, &thread_options);
 	if (init_ret != 0) {
 		perror("filed_worker_threads_init");
 
