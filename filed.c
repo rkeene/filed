@@ -829,6 +829,8 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	if (fp == NULL) {
 		close(fd);
 
+		free(log);
+
 		return;
 	}
 
@@ -1050,6 +1052,8 @@ static void *filed_worker_thread(void *arg_v) {
 			filed_log_msg("ACCEPT_FAILED");
 
 			failure_count++;
+
+			free(log);
 
 			continue;
 		}
