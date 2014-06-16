@@ -140,6 +140,36 @@ struct filed_log_entry *filed_log_msg_list;
 pthread_mutex_t filed_log_msg_list_mutex;
 pthread_cond_t filed_log_msg_list_ready;
 
+/* Signal Handler */
+static void filed_signal_handler(int signal_number) {
+	struct filed_fileinfo *cache;
+	unsigned int idx;
+
+	switch (signal_number) {
+		case SIGHUP:
+			for (idx = 0; idx < filed_fileinfo_fdcache_size; idx++) {
+				cache = &filed_fileinfo_fdcache[idx];
+
+				pthread_mutex_lock(&cache->mutex);
+
+				cache->path[0] = '\0';
+				if (cache->fd >= 0) {
+					close(cache->fd);
+
+					cache->fd = -1;
+				}
+
+				cache->lastmod = "";
+				cache->type = "";
+
+				pthread_mutex_unlock(&cache->mutex);
+			}
+			break;
+	}
+
+	return;
+}
+
 /* Initialize cache */
 static int filed_init_cache(unsigned int cache_size) {
 	unsigned int idx;
@@ -191,6 +221,9 @@ static int filed_init(unsigned int cache_size) {
 
 	/* Ignore SIGPIPE */
 	signal(SIGPIPE, SIG_IGN);
+
+	/* Handle SIGHUP to release all caches */
+	signal(SIGHUP, filed_signal_handler);
 
 	/* Initialize cache structure */
 	cache_ret = filed_init_cache(cache_size);
