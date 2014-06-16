@@ -1,6 +1,7 @@
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/prctl.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -1463,6 +1464,9 @@ int main(int argc, char **argv) {
 			return(1);
 		}
 	}
+
+	/* Do not allow any privilege changes beyond this point */
+	prctl(PR_SET_NO_NEW_PRIVS, 1);
 
 	/* Initialize */
 	init_ret = filed_init(cache_size);
