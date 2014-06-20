@@ -206,6 +206,7 @@ static int filed_init_cache(unsigned int cache_size) {
 /* Initialize process */
 static int filed_init(unsigned int cache_size) {
 	static int called = 0;
+	ssize_t read_ret = 0;
 	unsigned int random_value = 0;
 	int cache_ret;
 	int random_fd;
@@ -234,7 +235,7 @@ static int filed_init(unsigned int cache_size) {
 	/* Initialize random number generator */
 	random_fd = open("/dev/urandom", O_RDONLY);
 	if (random_fd >= 0) {
-		read(random_fd, &random_value, sizeof(random_value));
+		read_ret = read(random_fd, &random_value, sizeof(random_value));
 
 		close(random_fd);
 	}
@@ -246,6 +247,9 @@ static int filed_init(unsigned int cache_size) {
 	srandom(random_value);
 
 	return(0);
+
+	/* NOTREACH: Read may fail or succeed, we don't actually care */
+	read_ret = read_ret;
 }
 
 /* Listen on a particular address/port */
