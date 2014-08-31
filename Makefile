@@ -16,8 +16,9 @@ filed: filed.o
 
 filed.o: filed.c filed-mime-types.h
 
-filed-mime-types.h: generate-mime-types
-	./generate-mime-types "$(MIMETYPES)" > filed-mime-types.h.new
+filed-mime-types.h: generate-mime-types mime.types
+	./generate-mime-types "$(MIMETYPES)" > filed-mime-types.h.new || \
+		./generate-mime-types mime.types > filed-mime-types.h.new
 	mv filed-mime-types.h.new filed-mime-types.h
 
 install: filed filed.1
