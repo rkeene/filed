@@ -94,6 +94,11 @@ struct filed_http_request {
 			int present;
 			char host[FILED_PATH_BUFFER_SIZE];
 		} host;
+
+		enum {
+			FILED_CONNECTION_CLOSE,
+			FILED_CONNECTION_KEEP_ALIVE
+		} connection;
 	} headers;
 };
 
@@ -689,6 +694,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	range_request = 0;
 	range_length = -1;
 	buffer_st->headers.host.present = 0;
+	buffer_st->headers.connection = FILED_CONNECTION_CLOSE;
 
 	buffer = buffer_st->tmpbuf;
 	buffer_len = sizeof(buffer_st->tmpbuf);
@@ -788,6 +794,8 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 			}
 
 			strcpy(buffer_st->headers.host.host, workbuffer);
+		} else if (strncasecmp(buffer, "Connection: Keep-Alive", 22) == 0) {
+			buffer_st->headers.connection = FILED_CONNECTION_KEEP_ALIVE;
 		}
 
 		if (memcmp(buffer, "\r\n", 2) == 0) {
@@ -892,8 +900,20 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	path = path;
 }
 
+/* Convert an enum representing the "Connection" header value to a string */
+static const char *filed_connection_str(int connection_value) {
+	switch (connection_value) {
+		case FILED_CONNECTION_CLOSE:
+			return("close");
+		case FILED_CONNECTION_KEEP_ALIVE:
+			return("keep-alive");
+	}
+
+	return("close");
+}
+
 /* Handle a single request from a client */
-static void filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log, struct filed_options *options) {
+static int filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log, struct filed_options *options) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
 	size_t sendfile_size;
@@ -917,7 +937,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 		filed_log_entry(log);
 
-		return;
+		return(0);
 	}
 
 	request = filed_get_http_request(fp, request, options);
@@ -927,7 +947,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET, "format", log);
 
-		return;
+		return(0);
 	}
 
 	path = request->path;
@@ -938,14 +958,14 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
 		filed_redirect_index(fp, date_current, path, log);
 
-		return;
+		return(0);
 	}
 
 	fileinfo = filed_open_file(path, &request->fileinfo);
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404, request->method, "open_failed", log);
 
-		return;
+		return(0);
 	}
 
 	if (request->headers.range.present) {
@@ -955,7 +975,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 				close(fileinfo->fd);
 
-				return;
+				return(0);
 			}
 
 			if (request->headers.range.length == ((off_t) -1)) {
@@ -983,12 +1003,13 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 		request->headers.range.length = fileinfo->len;
 	}
 
-	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\nETag: \"%s\"\r\n",
+	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: %s\r\nETag: \"%s\"\r\n",
 		http_code,
 		date_current,
 		fileinfo->lastmod,
 		(unsigned long long) request->headers.range.length,
 		fileinfo->type,
+		filed_connection_str(request->headers.connection),
 		fileinfo->etag
 	);
 
@@ -1079,11 +1100,15 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	filed_log_entry(log);
 
-	close(fileinfo->fd);
+	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
+		close(fileinfo->fd);
 
-	fclose(fp);
+		fclose(fp);
 
-	return;
+		return(0);
+	}
+
+	return(1);
 }
 
 /* Handle incoming connections */
@@ -1095,7 +1120,8 @@ static void *filed_worker_thread(void *arg_v) {
 	struct sockaddr_in6 addr;
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
-	int master_fd, fd;
+	int accept_new = 1;
+	int master_fd, fd = -1;
 
 	/* Read arguments */
 	arg = arg_v;
@@ -1120,8 +1146,10 @@ static void *filed_worker_thread(void *arg_v) {
 		log->type = FILED_LOG_TYPE_TRANSFER;
 
 		/* Accept a new client */
-		addrlen = sizeof(addr);
-		fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
+		if (accept_new) {
+			addrlen = sizeof(addr);
+			fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
+		}
 
 		/*
 		 * If we fail, make a note of it so we don't go into a loop of
@@ -1150,7 +1178,7 @@ static void *filed_worker_thread(void *arg_v) {
 		failure_count = 0;
 
 		/* Handle socket */
-		filed_handle_client(fd, &request, log, options);
+		accept_new = !filed_handle_client(fd, &request, log, options);
 	}
 
 	/* Report error */
