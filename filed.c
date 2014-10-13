@@ -937,7 +937,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 		filed_log_entry(log);
 
-		return(0);
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	request = filed_get_http_request(fp, request, options);
@@ -947,7 +947,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET, "format", log);
 
-		return(0);
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	path = request->path;
@@ -958,14 +958,14 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
 		filed_redirect_index(fp, date_current, path, log);
 
-		return(0);
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	fileinfo = filed_open_file(path, &request->fileinfo);
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404, request->method, "open_failed", log);
 
-		return(0);
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	if (request->headers.range.present) {
@@ -975,7 +975,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 				close(fileinfo->fd);
 
-				return(0);
+				return(FILED_CONNECTION_CLOSE);
 			}
 
 			if (request->headers.range.length == ((off_t) -1)) {
@@ -1100,15 +1100,15 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 	filed_log_entry(log);
 
-	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
-		close(fileinfo->fd);
+	close(fileinfo->fd);
 
+	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
 		fclose(fp);
 
-		return(0);
+		return(FILED_CONNECTION_CLOSE);
 	}
 
-	return(1);
+	return(FILED_CONNECTION_KEEP_ALIVE);
 }
 
 /* Handle incoming connections */
@@ -1120,7 +1120,7 @@ static void *filed_worker_thread(void *arg_v) {
 	struct sockaddr_in6 addr;
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
-	int accept_new = 1;
+	int connection_state = FILED_CONNECTION_CLOSE;
 	int master_fd, fd = -1;
 
 	/* Read arguments */
@@ -1145,9 +1145,11 @@ static void *filed_worker_thread(void *arg_v) {
 
 		log->type = FILED_LOG_TYPE_TRANSFER;
 
-		/* Accept a new client */
-		if (accept_new) {
+		/* If we closed the old connection, accept a new one */
+		if (connection_state == FILED_CONNECTION_CLOSE) {
+			/* Accept a new client */
 			addrlen = sizeof(addr);
+
 			fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
 		}
 
@@ -1178,7 +1180,7 @@ static void *filed_worker_thread(void *arg_v) {
 		failure_count = 0;
 
 		/* Handle socket */
-		accept_new = !filed_handle_client(fd, &request, log, options);
+		connection_state = filed_handle_client(fd, &request, log, options);
 	}
 
 	/* Report error */
