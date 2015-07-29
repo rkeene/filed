@@ -267,7 +267,6 @@ static int filed_listen(const char *address, unsigned int port) {
 	int family;
 	int fd;
 
-
 	family = AF_INET6;
 	pton_ret = inet_pton(family, address, &addr_v6.sin6_addr.s6_addr);
 	if (pton_ret != 1) {
@@ -322,8 +321,15 @@ static int filed_listen(const char *address, unsigned int port) {
 #  define filed_log_entry(x) /**/
 #  define filed_log_ip(x, ...) NULL
 #  define filed_log_new(x) &local_dummy_log
-#  define filed_log_open(x) stdout
+#  define filed_log_free(x) /**/
+
+/* Return logging handle */
+static FILE *filed_log_open(const char *file) {
+	return(stdout);
+	file = file;
+}
 #else
+#  define filed_log_free(x) free(x)
 #  ifdef FILED_DEBUG
 #    define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
 #  else
@@ -1163,7 +1169,7 @@ static void *filed_worker_thread(void *arg_v) {
 
 			failure_count++;
 
-			free(log);
+			filed_log_free(log);
 
 			continue;
 		}
