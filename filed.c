@@ -33,6 +33,39 @@
 #define CACHE_SIZE 8209
 #define LOG_FILE "-"
 
+/* Fuzzing Test Code */
+#ifdef FILED_TEST_AFL
+#define FILED_DONT_LOG 1
+#define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
+#define bind(x, y, z) afl_bind(x, y, z)
+#define socket(x, y, z) 8193
+#define listen(x, y) 0
+#define accept(x, y, z) afl_accept(x, y, z)
+#define close(x) { if (strcmp(#x, "random_fd") == 0) { close(x); } else { exit(0); } }
+#define fclose(x) exit(0)
+
+static int afl_accept(int x, void *addr, void *z) {
+	((struct sockaddr_in6 *) addr)->sin6_family = AF_INET + AF_INET6 + 1;
+	return(STDIN_FILENO);
+	x = x;
+	z = z;
+}
+
+static int afl_bind(int x, void *y, socklen_t z) {
+	return(8194);
+	x = x;
+	y = y;
+	z = z;
+}
+
+static int afl_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg) {
+	start_routine(arg);
+	exit(3);
+	thread = thread;
+	attr = attr;
+}
+#endif
+
 /* Configuration options that work threads need to be aware of */
 struct filed_options {
 	int vhosts_enabled;
