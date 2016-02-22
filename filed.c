@@ -43,6 +43,27 @@
 #include <time.h>
 #include <pwd.h>
 
+/*
+ * Determine if the C compiler supports C11 atomics
+ */
+#if __STDC_VERSION__ >= 201112L
+#  ifndef __STDC_NO_ATOMICS__
+#    define FILED_FEATURE_C11_ATOMICS 1
+#  endif
+#endif
+
+/*
+ * If the C compiler does not support C11 atomics, disable TIMEOUT support
+ * since it relies upon it
+ */
+#ifndef FILED_FEATURE_C11_ATOMICS
+#  warning "Automatically defining FILED_DONT_TIMEOUT since your C compiler lacks C11 atomics"
+#  define FILED_DONT_TIMEOUT 1
+#endif
+
+/*
+ * These headers are only required for TIMEOUT support
+ */
 #ifndef FILED_DONT_TIMEOUT
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -65,6 +86,7 @@
 /* Fuzzing Test Code */
 #ifdef FILED_TEST_AFL
 #define FILED_DONT_LOG 1
+#define FILED_DONT_TIMEOUT 1
 #define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
 #define bind(x, y, z) afl_bind(x, y, z)
 #define socket(x, y, z) 8193
