@@ -746,6 +746,13 @@ static void *filed_sockettimeout_thread(void *arg) {
 
 static int filed_sockettimeout_thread_init(void) {
 	pthread_t thread_id;
+
+	pthread_create(&thread_id, NULL, filed_sockettimeout_thread, NULL);
+
+	return(0);
+}
+
+static int filed_sockettimeout_init(void) {
 	long maxfd, idx;
 
 	maxfd = sysconf(_SC_OPEN_MAX);
@@ -763,13 +770,10 @@ static int filed_sockettimeout_thread_init(void) {
 	}
 
 	filed_sockettimeout_sockstatus_length = maxfd;
-
 	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
 	if (filed_sockettimeout_devnull_fd < 0) {
 		return(-1);
 	}
-
-	pthread_create(&thread_id, NULL, filed_sockettimeout_thread, NULL);
 
 	return(0);
 }
@@ -1758,6 +1762,14 @@ int main(int argc, char **argv) {
 		return(1);
 	}
 
+	/* Initialize timeout structures */
+	init_ret = filed_sockettimeout_init();
+	if (init_ret != 0) {
+		perror("filed_sockettimeout_init");
+
+		return(8);
+	}
+
 	/* Become a daemon */
 	if (daemon_enabled) {
 		init_ret = filed_daemonize();
@@ -1816,7 +1828,7 @@ int main(int argc, char **argv) {
 	if (init_ret != 0) {
 		perror("filed_sockettimeout_thread_init");
 
-		return(6);
+		return(7);
 	}
 
 	/* Create worker threads */
