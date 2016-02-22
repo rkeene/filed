@@ -490,7 +490,7 @@ static void *filed_logging_thread(void *arg_p) {
 					break;
 			}
 			fprintf(fp, " THREAD=%llu TIME=%llu\n",
-				(unsigned long long) curr->thread,
+				(unsigned long long) ((intptr_t) curr->thread),
 				(unsigned long long) now
 			);
 			fflush(fp);
