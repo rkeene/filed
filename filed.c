@@ -588,6 +588,25 @@ static int filed_logging_thread_init(FILE *logfp) {
 }
 #endif
 
+static void *filed_sockettimeout_thread(void *arg) {
+	while (1) {
+		usleep(300000);
+	}
+
+	return(NULL);
+
+	/* NOTREACHED */
+	arg = arg;
+}
+
+static int filed_sockettimeout_thread_init(void) {
+	pthread_t thread_id;
+
+	pthread_create(&thread_id, NULL, filed_sockettimeout_thread, NULL);
+
+	return(0);
+}
+
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
 	struct tm timeinfo_tm, *timeinfo_tm_p;
@@ -1608,6 +1627,14 @@ int main(int argc, char **argv) {
 		perror("filed_logging_thread_init");
 
 		return(4);
+	}
+
+	/* Create socket termination thread */
+	init_ret = filed_sockettimeout_thread_init();
+	if (init_ret != 0) {
+		perror("filed_sockettimeout_thread_init");
+
+		return(6);
 	}
 
 	/* Create worker threads */
