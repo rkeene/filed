@@ -43,6 +43,11 @@
 #include <time.h>
 #include <pwd.h>
 
+#ifndef FILED_DONT_TIMEOUT
+#include <stdatomic.h>
+#include <stdbool.h>
+#endif
+
 /* Compile time constants */
 #define FILED_VERSION "1.13"
 #define FILED_SENDFILE_MAX 16777215
@@ -588,24 +593,165 @@ static int filed_logging_thread_init(FILE *logfp) {
 }
 #endif
 
+#ifdef FILED_DONT_TIMEOUT
+#define filed_sockettimeout_thread_init() 0
+#define filed_sockettimeout_accept(x) /**/
+#define filed_sockettimeout_processing_start(x) /**/
+#define filed_sockettimeout_processing_end(x) /**/
+#define filed_sockettimeout_close(x) /**/
+#else
+_Atomic time_t filed_sockettimeout_time;
+struct {
+	_Atomic time_t expiration_time;
+	_Atomic pthread_t thread_id;
+	bool valid;
+}* filed_sockettimeout_sockstatus;
+long filed_sockettimeout_sockstatus_length;
+int filed_sockettimeout_devnull_fd;
+
+static int filed_sockettimeout_sockfd_in_range(int sockfd) {
+	if (sockfd < 3) {
+		return(0);
+	}
+
+	if (sockfd > filed_sockettimeout_sockstatus_length) {
+		return(0);
+	}
+
+	return(1);
+}
+
+static void filed_sockettimeout_expire(int sockfd, int length) {
+	time_t now, expire;
+
+	now = atomic_load(&filed_sockettimeout_time);
+
+	expire = now + length;
+
+	atomic_store(&filed_sockettimeout_sockstatus[sockfd].expiration_time, expire);
+
+	return;
+}
+
+static void filed_sockettimeout_accept(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	filed_sockettimeout_expire(sockfd, 60);
+
+	atomic_store(&filed_sockettimeout_sockstatus[sockfd].thread_id, pthread_self());
+
+	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, true);
+
+	return;
+}
+
+static void filed_sockettimeout_processing_start(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	filed_sockettimeout_expire(sockfd, 86400);
+
+	return;
+}
+
+static void filed_sockettimeout_processing_end(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	filed_sockettimeout_expire(sockfd, 60);
+
+	return;
+}
+
+static void filed_sockettimeout_close(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, false);
+
+	return;
+}
+
 static void *filed_sockettimeout_thread(void *arg) {
+	time_t now, expiration_time;
+	pthread_t thread_id;
+	long idx;
+	int count;
+	bool valid;
+
 	while (1) {
-		usleep(300000);
+		for (count = 0; count < 10; count++) {
+			usleep(30000000);
+
+			now = time(NULL);
+
+			atomic_store(&filed_sockettimeout_time, now);
+		}
+
+		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
+			valid = atomic_load(&filed_sockettimeout_sockstatus[idx].valid);
+
+			if (!valid) {
+				continue;
+			}
+
+			expiration_time = atomic_load(&filed_sockettimeout_sockstatus[idx].expiration_time);
+
+			thread_id = atomic_load(&filed_sockettimeout_sockstatus[idx].thread_id);
+
+			if (expiration_time > now) {
+				continue;
+			}
+
+			filed_sockettimeout_close(idx);
+
+			dup2(filed_sockettimeout_devnull_fd, idx);
+
+			pthread_kill(thread_id, SIGPIPE);
+		}
 	}
 
 	return(NULL);
 
-	/* NOTREACHED */
+	/* NOTREACH: We don't actually take any arguments */
 	arg = arg;
 }
 
 static int filed_sockettimeout_thread_init(void) {
 	pthread_t thread_id;
+	long maxfd, idx;
+
+	maxfd = sysconf(_SC_OPEN_MAX);
+	if (maxfd <= 0) {
+		maxfd = 4096;
+	}
+
+	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * maxfd);
+	if (filed_sockettimeout_sockstatus == NULL) {
+		return(-1);
+	}
+
+	for (idx = 0; idx < maxfd; idx++) {
+		filed_sockettimeout_sockstatus[idx].valid = false;
+	}
+
+	filed_sockettimeout_sockstatus_length = maxfd;
+
+	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
+	if (filed_sockettimeout_devnull_fd < 0) {
+		return(-1);
+	}
 
 	pthread_create(&thread_id, NULL, filed_sockettimeout_thread, NULL);
 
 	return(0);
 }
+#endif
 
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
@@ -952,6 +1098,8 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 	filed_log_entry(log);
 
 	/* Close connection */
+	filed_sockettimeout_close(fileno(fp));
+
 	fclose(fp);
 
 	return;
@@ -974,6 +1122,8 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	filed_log_entry(log);
 
 	/* Close connection */
+	filed_sockettimeout_close(fileno(fp));
+
 	fclose(fp);
 
 	return;
@@ -1011,6 +1161,8 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
 	if (fp == NULL) {
+		filed_sockettimeout_close(fd);
+
 		close(fd);
 
 		log->buffer[0] = '\0';
@@ -1031,6 +1183,8 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 		return(FILED_CONNECTION_CLOSE);
 	}
+
+	filed_sockettimeout_processing_start(fd);
 
 	path = request->path;
 	strcpy(log->buffer, path);
@@ -1185,10 +1339,14 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	close(fileinfo->fd);
 
 	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
+		filed_sockettimeout_close(fd);
+
 		fclose(fp);
 
 		return(FILED_CONNECTION_CLOSE);
 	}
+
+	filed_sockettimeout_processing_end(fd);
 
 	return(FILED_CONNECTION_KEEP_ALIVE);
 }
@@ -1249,6 +1407,8 @@ static void *filed_worker_thread(void *arg_v) {
 
 			continue;
 		}
+
+		filed_sockettimeout_accept(fd);
 
 		/* Fill in log structure */
 		if (filed_log_ip((struct sockaddr *) &addr, log->ip, sizeof(log->ip)) == NULL) {

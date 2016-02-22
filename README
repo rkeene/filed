@@ -55,17 +55,25 @@ following tunables that can only be toggled during compile-time:
 	not engaged and the logging functions are not compiled at all.
 	This results in a slightly smaller and faster binary
 
-   2. Debugging (CFLAGS, -DFILED_DEBUG=1)
+   2. Kill idle connections (CFLAGS, -DFILED_DONT_TIMEOUT=1)
+        Killing idle connections relies heavily upon C11 atomics.  This
+        requires a relatively new version of GCC (4.9+) or other C compiler
+        that implements this aspect of C11 and so it can be disabled at
+        compile time (which is the only time it makes sense).  One day an
+        alternate implementation might be present that uses a mutex instead
+        of atomics at which point this documentation will be updated.
+
+   3. Debugging (CFLAGS, -DFILED_DEBUG=1)
 	This is an internal option and should only be used during development.
 
-   3. Differing HTTP semantics (CFLAGS, -DFILED_NONBLOCK_HTTP=1)
+   4. Differing HTTP semantics (CFLAGS, -DFILED_NONBLOCK_HTTP=1)
 	It is possible that some HTTP clients may not process the HTTP stream
 	being delivered if they cannot write to the HTTP stream itself.  This
 	has not been observed yet, but it is possible.  If these semantics are
 	needed (and they should not be) then they can be enabled with this
 	flag at the cost of performance
 
-   4. MIME Types (MIMETYPES)
+   5. MIME Types (MIMETYPES)
 	For single-file convience "filed" compiles the mapping of file
 	extensions (the string in the filename following its last dot ("."))
 	into the executable.  This mapping comes from a file in the format of
