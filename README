@@ -94,3 +94,18 @@ but if the process does not support log rotation then it will not provide that
 benefit.  For example, if you wish to write logs to syslogd(8) you can use
 logger(1), such as:
 	# ./filed --root /www --user nobody --log '|logger -t filed' --daemon
+
+Troubleshooting
+---------------
+   1. It won't compile, something about stdatomic.h not found or _Atomic not
+      a valid type.
+
+      => This is a bug in your compiler:
+            https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58016
+
+         GCC 4.7.x and 4.8.x define the macro indicating that they have C11
+         support and do not define the macro that C11 requires to indicate
+         that C11 atomics are not available.  They should define that macro.
+
+         You can disable the features in "filed" that require C11 atomics by
+         defining FILED_DONT_TIMEOUT in the Makefile.
