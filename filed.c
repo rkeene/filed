@@ -57,7 +57,6 @@
  * since it relies upon it
  */
 #ifndef FILED_FEATURE_C11_ATOMICS
-#  warning "Automatically defining FILED_DONT_TIMEOUT since your C compiler lacks C11 atomics"
 #  define FILED_DONT_TIMEOUT 1
 #endif
 
@@ -617,6 +616,7 @@ static int filed_logging_thread_init(FILE *logfp) {
 
 #ifdef FILED_DONT_TIMEOUT
 #define filed_sockettimeout_thread_init() 0
+#define filed_sockettimeout_init() 0
 #define filed_sockettimeout_accept(x) /**/
 #define filed_sockettimeout_processing_start(x) /**/
 #define filed_sockettimeout_processing_end(x) /**/
