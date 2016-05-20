@@ -268,6 +268,11 @@ static int filed_init_cache(unsigned int cache_size) {
 		return(1);
 	}
 
+	/* Cache does not need to be allocated if cache is not enabled */
+	if (cache_size == 0) {
+		return(0);
+	}
+
 	/* Allocate cache */
 	filed_fileinfo_fdcache_size = cache_size;
 	filed_fileinfo_fdcache = malloc(sizeof(*filed_fileinfo_fdcache) * filed_fileinfo_fdcache_size);
@@ -869,22 +874,31 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	off_t len;
 	int fd;
 
-	cache_idx = filed_hash((const unsigned char *) path, filed_fileinfo_fdcache_size);
+	if (filed_fileinfo_fdcache_size != 0) {
+		cache_idx = filed_hash((const unsigned char *) path, filed_fileinfo_fdcache_size);
 
-	cache = &filed_fileinfo_fdcache[cache_idx];
+		cache = &filed_fileinfo_fdcache[cache_idx];
 
-	filed_log_msg_debug("Locking mutex for idx: %lu", (unsigned long) cache_idx);
+		filed_log_msg_debug("Locking mutex for idx: %lu", (unsigned long) cache_idx);
 
-	pthread_mutex_lock(&cache->mutex);
+		pthread_mutex_lock(&cache->mutex);
 
-	filed_log_msg_debug("Completed locking mutex for idx: %lu", (unsigned long) cache_idx);
+		filed_log_msg_debug("Completed locking mutex for idx: %lu", (unsigned long) cache_idx);
+	} else {
+		cache_idx = 0;
+		cache = buffer;
+		cache->path[0] = '\0';
+		cache->fd = -1;
+	}
 
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
 		fd = open(path, O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
-			pthread_mutex_unlock(&cache->mutex);
+			if (filed_fileinfo_fdcache_size != 0) {
+				pthread_mutex_unlock(&cache->mutex);
+			}
 
 			return(NULL);
 		}
@@ -908,25 +922,27 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);
 	}
 
-	/*
-	 * We have to make a duplicate FD, because once we release the cache
-	 * mutex, the file descriptor may be closed
-	 */
-	fd = dup(cache->fd);
-	if (fd < 0) {
+	if (filed_fileinfo_fdcache_size != 0) {
+		/*
+		 * We have to make a duplicate FD, because once we release the cache
+		 * mutex, the file descriptor may be closed
+		 */
+		fd = dup(cache->fd);
+		if (fd < 0) {
+			pthread_mutex_unlock(&cache->mutex);
+
+			return(NULL);
+		}
+
+		buffer->fd = fd;
+		buffer->len = cache->len;
+		buffer->type = cache->type;
+		memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
+		memcpy(buffer->etag, cache->etag, sizeof(buffer->etag));
+		buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
+
 		pthread_mutex_unlock(&cache->mutex);
-
-		return(NULL);
 	}
-
-	buffer->fd = fd;
-	buffer->len = cache->len;
-	buffer->type = cache->type;
-	memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
-	memcpy(buffer->etag, cache->etag, sizeof(buffer->etag));
-	buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
-
-	pthread_mutex_unlock(&cache->mutex);
 
 	return(buffer);
 }
