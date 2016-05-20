@@ -1,7 +1,7 @@
 CC = gcc
-CFLAGS = -std=gnu11 -Wall -Werror -W -pthread -O3 -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE
-LDFLAGS = -pthread
-LIBS = -lpthread
+CFLAGS = -std=gnu11 -Wall -Werror -W -pthread -O3 -D_FILE_OFFSET_BITS=64 -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE $(FILED_EXTRA_CFLAGS)
+LDFLAGS = -pthread $(FILED_EXTRA_LDFLAGS)
+LIBS = -lpthread $(FILED_EXTRA_LIBS)
 MIMETYPES = /etc/httpd/mime.types
 
 PREFIX = /usr/local
