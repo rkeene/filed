@@ -119,6 +119,7 @@ static int afl_pthread_create(pthread_t *thread, const pthread_attr_t *attr, voi
 /* Configuration options that work threads need to be aware of */
 struct filed_options {
 	int vhosts_enabled;
+	const char *fake_newroot;
 };
 
 /* Arguments for worker threads */
@@ -867,8 +868,53 @@ static void filed_generate_etag(char *etag, size_t length) {
 	);
 }
 
+#ifdef FILED_FAKE_CHROOT
+/* Translate a path into a fake chroot path */
+static const char *filed_path_translate(const char *path, struct filed_options *options) {
+	static __thread char pathBuffer[8192];
+	int snprintf_ret;
+
+	/* If no alternative root is specified, return the unadorned path */
+	if (!options->fake_newroot) {
+		return(path);
+	}
+
+	/* Verify that this request will not go outside of the specified root */
+	if (strstr(path, "/../") != NULL || path[0] != '/') {
+		filed_log_msg_debug("Unable to translate path \"%s\", contains invalid characters", path);
+
+		return(options->fake_newroot);
+	}
+
+	/* Create the new path into our local (TLS) static buffer */
+	snprintf_ret = snprintf(pathBuffer, sizeof(pathBuffer), "%s/%s", options->fake_newroot, path);
+	if (snprintf_ret < 0 || ((unsigned int) snprintf_ret) >= sizeof(pathBuffer)) {
+		filed_log_msg_debug("Unable to translate path \"%s\", will not fit into new buffer", path);
+
+		return(options->fake_newroot);
+	}
+
+	filed_log_msg_debug("Translating path \"%s\" into \"%s\"", path, pathBuffer);
+
+	/* Return the new path */
+	return(pathBuffer);
+}
+
+static void filed_path_translate_set_root(const char *var, struct filed_options *options, const char *val) {
+	options->fake_newroot = strdup(val);
+
+	return;
+
+	/* var is only used in the macro -- discard it here */
+	var = var;
+}
+#else
+#define filed_path_translate(path, options) path
+#define filed_path_translate_set_root(var, options, val) var = strdup(val)
+#endif
+
 /* Open a file and return file information */
-static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
+static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer, struct filed_options *options) {
 	struct filed_fileinfo *cache;
 	unsigned int cache_idx;
 	off_t len;
@@ -894,7 +940,7 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
-		fd = open(path, O_RDONLY | O_LARGEFILE);
+		fd = open(filed_path_translate(path, options), O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
 			if (filed_fileinfo_fdcache_size != 0) {
 				pthread_mutex_unlock(&cache->mutex);
@@ -945,6 +991,9 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 	}
 
 	return(buffer);
+
+	/* options is only used if fake chroot is enabled, confuse the compiler */
+	options = options;
 }
 
 /* Process an HTTP request and return the path requested */
@@ -1239,7 +1288,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 		return(FILED_CONNECTION_CLOSE);
 	}
 
-	fileinfo = filed_open_file(path, &request->fileinfo);
+	fileinfo = filed_open_file(path, &request->fileinfo, options);
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404, request->method, "open_failed", log);
 
@@ -1683,7 +1732,7 @@ static int filed_daemonize(void) {
 /* Run process */
 int main(int argc, char **argv) {
 	struct option options[12];
-	struct filed_options thread_options;
+	struct filed_options thread_options = {0};
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	FILE *log_fp;
 	uid_t user = 0;
@@ -1693,9 +1742,6 @@ int main(int argc, char **argv) {
 	int setuid_enabled = 0, daemon_enabled = 0;
 	int ch;
 	int fd;
-
-	/* Set default values */
-	thread_options.vhosts_enabled = 0;
 
 	/* Process arguments */
 	filed_getopt_long_setopt(&options[0], "port", required_argument, 'p');
@@ -1734,7 +1780,7 @@ int main(int argc, char **argv) {
 				}
 				break;
 			case 'r':
-				newroot = strdup(optarg);
+				filed_path_translate_set_root(newroot, &thread_options, optarg);
 				break;
 			case 'l':
 				log_file = strdup(optarg);

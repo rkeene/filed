@@ -71,10 +71,19 @@ following tunables that can only be toggled during compile-time:
 	being delivered if they cannot write to the HTTP stream itself.  This
 	has not been observed yet, but it is possible.  If these semantics are
 	needed (and they should not be) then they can be enabled with this
-	flag at the cost of performance
+	flag at the cost of performance.
 
-   5. MIME Types (MIMETYPES)
-	For single-file convience "filed" compiles the mapping of file
+   5. Differing chroot() semantics (CFLAGS, -DFILED_FAKE_CHROOT=1)
+        In some cases it is desirable to mangle paths with a path prefix
+        rather than call chroot() at startup.  This is less secure and slower
+        and should be generally avoided -- however it may be necessary to do.
+        In these cases the executable may be compiled with the
+        FILED_FAKE_CHROOT C preprocessor macro defined and instead of calling
+        chroot() all HTTP requests will have the root suffix specified as the
+        argument to the "-r" or "--root" option prepended to them.
+
+   6. MIME Types (MIMETYPES)
+	For single-file convenience "filed" compiles the mapping of file
 	extensions (the string in the filename following its last dot ("."))
 	into the executable.  This mapping comes from a file in the format of
 		type1   type1_extension1 type1_extension2...
