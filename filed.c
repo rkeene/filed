@@ -69,7 +69,7 @@
 #endif
 
 /* Compile time constants */
-#define FILED_VERSION "1.17"
+#define FILED_VERSION "1.18"
 #define FILED_SENDFILE_MAX 16777215
 #define FILED_MAX_FAILURE_COUNT 30
 #define FILED_DEFAULT_TYPE "application/octet-stream"
