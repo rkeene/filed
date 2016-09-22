@@ -43,31 +43,6 @@
 #include <time.h>
 #include <pwd.h>
 
-/*
- * Determine if the C compiler supports C11 atomics
- */
-#if __STDC_VERSION__ >= 201112L
-#  ifndef __STDC_NO_ATOMICS__
-#    define FILED_FEATURE_C11_ATOMICS 1
-#  endif
-#endif
-
-/*
- * If the C compiler does not support C11 atomics, disable TIMEOUT support
- * since it relies upon it
- */
-#ifndef FILED_FEATURE_C11_ATOMICS
-#  define FILED_DONT_TIMEOUT 1
-#endif
-
-/*
- * These headers are only required for TIMEOUT support
- */
-#ifndef FILED_DONT_TIMEOUT
-#include <stdatomic.h>
-#include <stdbool.h>
-#endif
-
 /* Compile time constants */
 #define FILED_VERSION "1.19"
 #define FILED_SENDFILE_MAX 16777215
@@ -85,7 +60,6 @@
 /* Fuzzing Test Code */
 #ifdef FILED_TEST_AFL
 #define FILED_DONT_LOG 1
-#define FILED_DONT_TIMEOUT 1
 #define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
 #define bind(x, y, z) afl_bind(x, y, z)
 #define socket(x, y, z) 8193
@@ -628,11 +602,11 @@ static int filed_logging_thread_init(FILE *logfp) {
 #define filed_sockettimeout_processing_end(x) /**/
 #define filed_sockettimeout_close(x) /**/
 #else
-_Atomic time_t filed_sockettimeout_time;
+time_t filed_sockettimeout_time;
 struct {
-	_Atomic time_t expiration_time;
-	_Atomic pthread_t thread_id;
-	bool valid;
+	time_t expiration_time;
+	pthread_t thread_id;
+	int valid;
 }* filed_sockettimeout_sockstatus;
 long filed_sockettimeout_sockstatus_length;
 int filed_sockettimeout_devnull_fd;
@@ -710,7 +684,7 @@ static void *filed_sockettimeout_thread(void *arg) {
 	pthread_t thread_id;
 	long idx;
 	int count;
-	bool valid;
+	int valid;
 
 	while (1) {
 		for (count = 0; count < 10; count++) {
