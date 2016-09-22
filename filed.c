@@ -717,6 +717,7 @@ static void filed_sockettimeout_close(int sockfd) {
 }
 
 static void *filed_sockettimeout_thread(void *arg) {
+	struct timespec sleep_time;
 	time_t now, expiration_time;
 	pthread_t thread_id;
 	long idx;
@@ -725,7 +726,9 @@ static void *filed_sockettimeout_thread(void *arg) {
 
 	while (1) {
 		for (count = 0; count < 10; count++) {
-			usleep(30000000);
+			sleep_time.tv_sec = 30;
+			sleep_time.tv_nsec = 0;
+			nanosleep(&sleep_time, NULL);
 
 			now = time(NULL);
 
@@ -1915,7 +1918,7 @@ int main(int argc, char **argv) {
 	/* Wait for threads to exit */
 	/* XXX:TODO: Monitor thread usage */
 	while (1) {
-		sleep(60);
+		sleep(86400);
 	}
 
 	/* Return in failure */
