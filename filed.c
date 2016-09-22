@@ -300,6 +300,8 @@ static int filed_init_cache(unsigned int cache_size) {
 /* Initialize process */
 static int filed_init(unsigned int cache_size) {
 	static int called = 0;
+	struct sigaction signal_handler_info;
+	sigset_t signal_handler_mask;
 	ssize_t read_ret = 0;
 	unsigned int random_value = 0;
 	int cache_ret;
@@ -314,11 +316,20 @@ static int filed_init(unsigned int cache_size) {
 	/* Attempt to lock all memory to physical RAM (but don't care if we can't) */
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	/* Ignore SIGPIPE */
-	signal(SIGPIPE, SIG_IGN);
+	/* Establish signal handlers */
+	/* SIGPIPE should interrupt system calls */
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = SA_RESTART;
+	sigaction(SIGPIPE, &signal_handler_info, NULL);
 
 	/* Handle SIGHUP to release all caches */
-	signal(SIGHUP, filed_signal_handler);
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = 0;
+	sigaction(SIGHUP, &signal_handler_info, NULL);
 
 	/* Initialize cache structure */
 	cache_ret = filed_init_cache(cache_size);
