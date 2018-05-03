@@ -1211,8 +1211,9 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 }
 
 /* Return a redirect to index.html */
+#ifndef FILED_DONT_REDIRECT_DIRECTORIES
 static void filed_redirect_index(FILE *fp, const char *date_current, const char *path, struct filed_log_entry *log) {
-	int http_code = 301;
+	int http_code = 302;
 	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: 0\r\nConnection: close\r\nLocation: %s\r\n\r\n",
 		http_code,
 		date_current,
@@ -1236,6 +1237,7 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	/* Currently unused: path */
 	path = path;
 }
+#endif
 
 /* Convert an enum representing the "Connection" header value to a string */
 static const char *filed_connection_str(int connection_value) {
@@ -1297,9 +1299,24 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 	/* If the requested path is a directory, redirect to index page */
 	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
+#ifdef FILED_DONT_REDIRECT_DIRECTORIES
+		char localpath[8192];
+		int snprintf_ret;
+
+		snprintf_ret = snprintf(localpath, sizeof(localpath), "%s/index.html", path);
+
+		if (snprintf_ret <= 0 || snprintf_ret > (sizeof(localpath) - 1)) {
+			filed_error_page(fp, date_current, 500, request->method, "path_format", log);
+
+			return(FILED_CONNECTION_CLOSE);
+		}
+
+		path = localpath;
+#else
 		filed_redirect_index(fp, date_current, path, log);
 
 		return(FILED_CONNECTION_CLOSE);
+#endif
 	}
 
 	fileinfo = filed_open_file(path, &request->fileinfo, options);

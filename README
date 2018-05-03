@@ -82,7 +82,12 @@ following tunables that can only be toggled during compile-time:
         chroot() all HTTP requests will have the root suffix specified as the
         argument to the "-r" or "--root" option prepended to them.
 
-   6. MIME Types (MIMETYPES)
+   6. Differing "index.html" handling (CFLAGS, -DFILED_DONT_REDIRECT_DIRECTORIES=1)
+        Normally "filed" redirects users who request a directory to the
+        index.html file in that directory so that no memory allocations are
+        required;  This option lets the server generate the new path.
+
+   7. MIME Types (MIMETYPES)
 	For single-file convenience "filed" compiles the mapping of file
 	extensions (the string in the filename following its last dot ("."))
 	into the executable.  This mapping comes from a file in the format of
