@@ -44,9 +44,19 @@ proc filed_hash {str mod} {
 }
 
 # Read contents of mime types file
-set fd [open $mimeinfofile]
-set mimeinfo [read $fd]
-close $fd
+catch {
+	set fd [open $mimeinfofile]
+	set mimeinfo [read $fd]
+	close $fd
+}
+
+if {![info exists mimeinfo]} {
+	puts stderr "Not using $mimeinfofile, unreadable."
+
+	exit 1
+}
+
+puts stderr "Using $mimeinfofile as mime.types"
 
 # Parse into type and extensions pairs
 foreach line [split $mimeinfo "\n"] {

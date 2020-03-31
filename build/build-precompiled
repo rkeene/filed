@@ -1,0 +1,65 @@
+#! /usr/bin/env bash
+
+# Ensure we are in the correct working directory
+cd "$(dirname "$(which "$0")")/.." || exit 1
+
+# Determine the version of Filed
+version=''
+eval "$(( grep '^# *define  *FILED_VERSION' filed.c; echo '|version=FILED_VERSION' ) | cpp -E | grep '^|' | sed 's@^|@@')"
+if [ -z "${version}" ]; then
+	echo "Unable to determine which version of Filed we are compiling.  Aborting." >&2
+
+	exit 1
+fi
+
+# Cleanup
+rm -rf workdir-buildPrecompiled-*
+
+# Compile everything, all at once
+idx=-1
+for tryCompilerDir in "$(readlink -f ~/root/cross-compilers)" "$(readlink -f ~/devel/build-cc/TMP)"; do
+	setup_cc="${tryCompilerDir}/setup-cc"
+
+	platforms=(
+		$("${setup_cc}" | tail -n +2)
+	)
+
+	for platform in "${platforms[@]}"; do
+		idx=$[$idx + 1]
+		(
+			workdir="workdir-buildPrecompiled-${idx}-$(openssl rand 20 -hex)-platform-${platform}" || exit 1
+			mkdir "${workdir}" || exit 1
+			cd "${workdir}" || exit 1
+
+			eval $("${setup_cc}" "${platform}")
+			make_extra=(
+				-f ../Makefile
+				srcdir=..
+				CC="${CC}"
+			)
+
+			case "${platform}" in
+				*-musl-*|*-musl)
+					make_extra=("${make_extra[@]}" FILED_EXTRA_LDFLAGS="-static")
+					;;
+			esac
+
+			make "${make_extra[@]}"
+		) &
+	done
+done
+
+# Wait for that to get done
+wait
+
+# Rename the files into place
+mkdir -p compiled
+for binary in workdir-buildPrecompiled-*/filed; do
+	platform="$(echo "${binary}" | sed 's@^.*-platform-@@;s@/.*$@@')"
+	mv "${binary}" "compiled/filed-${version}-${platform}"
+done
+
+# Cleanup
+rm -rf workdir-buildPrecompiled-*
+
+exit 0

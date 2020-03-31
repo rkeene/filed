@@ -1,3 +1,27 @@
+/*
+ * Copyright (c) 2014 - 2016, Roy Keene
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 	1. Redistributions of source code must retain the above copyright
+ * 	   notice, this list of conditions and the following disclaimer.
+ * 	2. Redistributions in binary form must reproduce the above copyright
+ * 	   notice, this list of conditions and the following disclaimer in the
+ * 	   documentation and/or other materials provided with the distribution.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE 
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE 
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -21,7 +45,7 @@
 #include <pwd.h>
 
 /* Compile time constants */
-#define FILED_VERSION "1.9"
+#define FILED_VERSION "1.21"
 #define FILED_SENDFILE_MAX 16777215
 #define FILED_MAX_FAILURE_COUNT 30
 #define FILED_DEFAULT_TYPE "application/octet-stream"
@@ -34,9 +58,43 @@
 #define CACHE_SIZE 8209
 #define LOG_FILE "-"
 
+/* Fuzzing Test Code */
+#ifdef FILED_TEST_AFL
+#define FILED_DONT_LOG 1
+#define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
+#define bind(x, y, z) afl_bind(x, y, z)
+#define socket(x, y, z) 8193
+#define listen(x, y) 0
+#define accept(x, y, z) afl_accept(x, y, z)
+#define close(x) { if (strcmp(#x, "random_fd") == 0) { close(x); } else { exit(0); } }
+#define fclose(x) exit(0)
+
+static int afl_accept(int x, void *addr, void *z) {
+	((struct sockaddr_in6 *) addr)->sin6_family = AF_INET + AF_INET6 + 1;
+	return(STDIN_FILENO);
+	x = x;
+	z = z;
+}
+
+static int afl_bind(int x, void *y, socklen_t z) {
+	return(8194);
+	x = x;
+	y = y;
+	z = z;
+}
+
+static int afl_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine) (void *), void *arg) {
+	start_routine(arg);
+	exit(3);
+	thread = thread;
+	attr = attr;
+}
+#endif
+
 /* Configuration options that work threads need to be aware of */
 struct filed_options {
 	int vhosts_enabled;
+	const char *fake_newroot;
 };
 
 /* Arguments for worker threads */
@@ -95,6 +153,11 @@ struct filed_http_request {
 			int present;
 			char host[FILED_PATH_BUFFER_SIZE];
 		} host;
+
+		enum {
+			FILED_CONNECTION_CLOSE,
+			FILED_CONNECTION_KEEP_ALIVE
+		} connection;
 	} headers;
 };
 
@@ -120,6 +183,7 @@ struct filed_log_entry {
 	/* Items for type = TRANSFER */
 	int http_code;
 	const char *reason;
+	time_t connecttime;
 	time_t starttime;
 	time_t endtime;
 	off_t req_offset;
@@ -141,6 +205,36 @@ struct filed_log_entry *filed_log_msg_list;
 pthread_mutex_t filed_log_msg_list_mutex;
 pthread_cond_t filed_log_msg_list_ready;
 
+/* Signal Handler */
+static void filed_signal_handler(int signal_number) {
+	struct filed_fileinfo *cache;
+	unsigned int idx;
+
+	switch (signal_number) {
+		case SIGHUP:
+			for (idx = 0; idx < filed_fileinfo_fdcache_size; idx++) {
+				cache = &filed_fileinfo_fdcache[idx];
+
+				pthread_mutex_lock(&cache->mutex);
+
+				cache->path[0] = '\0';
+				if (cache->fd >= 0) {
+					close(cache->fd);
+
+					cache->fd = -1;
+				}
+
+				cache->lastmod = "";
+				cache->type = "";
+
+				pthread_mutex_unlock(&cache->mutex);
+			}
+			break;
+	}
+
+	return;
+}
+
 /* Initialize cache */
 static int filed_init_cache(unsigned int cache_size) {
 	unsigned int idx;
@@ -149,6 +243,11 @@ static int filed_init_cache(unsigned int cache_size) {
 	/* Cache may not be re-initialized */
 	if (filed_fileinfo_fdcache_size != 0 || filed_fileinfo_fdcache != NULL) {
 		return(1);
+	}
+
+	/* Cache does not need to be allocated if cache is not enabled */
+	if (cache_size == 0) {
+		return(0);
 	}
 
 	/* Allocate cache */
@@ -177,6 +276,9 @@ static int filed_init_cache(unsigned int cache_size) {
 /* Initialize process */
 static int filed_init(unsigned int cache_size) {
 	static int called = 0;
+	struct sigaction signal_handler_info;
+	sigset_t signal_handler_mask;
+	ssize_t read_ret = 0;
 	unsigned int random_value = 0;
 	int cache_ret;
 	int random_fd;
@@ -190,8 +292,20 @@ static int filed_init(unsigned int cache_size) {
 	/* Attempt to lock all memory to physical RAM (but don't care if we can't) */
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	/* Ignore SIGPIPE */
-	signal(SIGPIPE, SIG_IGN);
+	/* Establish signal handlers */
+	/* SIGPIPE should interrupt system calls */
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = SA_RESTART;
+	sigaction(SIGPIPE, &signal_handler_info, NULL);
+
+	/* Handle SIGHUP to release all caches */
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = 0;
+	sigaction(SIGHUP, &signal_handler_info, NULL);
 
 	/* Initialize cache structure */
 	cache_ret = filed_init_cache(cache_size);
@@ -202,7 +316,7 @@ static int filed_init(unsigned int cache_size) {
 	/* Initialize random number generator */
 	random_fd = open("/dev/urandom", O_RDONLY);
 	if (random_fd >= 0) {
-		read(random_fd, &random_value, sizeof(random_value));
+		read_ret = read(random_fd, &random_value, sizeof(random_value));
 
 		close(random_fd);
 	}
@@ -214,6 +328,9 @@ static int filed_init(unsigned int cache_size) {
 	srandom(random_value);
 
 	return(0);
+
+	/* NOTREACH: Read may fail or succeed, we don't actually care */
+	read_ret = read_ret;
 }
 
 /* Listen on a particular address/port */
@@ -225,7 +342,6 @@ static int filed_listen(const char *address, unsigned int port) {
 	int pton_ret, bind_ret, listen_ret;
 	int family;
 	int fd;
-
 
 	family = AF_INET6;
 	pton_ret = inet_pton(family, address, &addr_v6.sin6_addr.s6_addr);
@@ -281,8 +397,15 @@ static int filed_listen(const char *address, unsigned int port) {
 #  define filed_log_entry(x) /**/
 #  define filed_log_ip(x, ...) NULL
 #  define filed_log_new(x) &local_dummy_log
-#  define filed_log_open(x) stdout
+#  define filed_log_free(x) /**/
+
+/* Return logging handle */
+static FILE *filed_log_open(const char *file) {
+	return(stdout);
+	file = file;
+}
 #else
+#  define filed_log_free(x) free(x)
 #  ifdef FILED_DEBUG
 #    define filed_log_msg_debug(x, ...) { fprintf(stderr, x, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
 #  else
@@ -343,10 +466,11 @@ static void *filed_logging_thread(void *arg_p) {
 						curr->endtime = now;
 					}
 
-					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i CLIENT.TIME.CONNECT=%llu REQUEST.TIME.START=%llu REQUEST.TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
 						method,
 						curr->buffer,
 						curr->ip, curr->port,
+						(unsigned long long) curr->connecttime,
 						(unsigned long long) curr->starttime,
 						(unsigned long long) curr->endtime,
 						curr->http_code, curr->reason,
@@ -359,7 +483,7 @@ static void *filed_logging_thread(void *arg_p) {
 					break;
 			}
 			fprintf(fp, " THREAD=%llu TIME=%llu\n",
-				(unsigned long long) curr->thread,
+				(unsigned long long) ((intptr_t) curr->thread),
 				(unsigned long long) now
 			);
 			fflush(fp);
@@ -397,6 +521,7 @@ static struct filed_log_entry *filed_log_new(int initialize) {
 	if (initialize) {
 		retval->buffer[0] = '\0';
 		retval->http_code = -1;
+		retval->connecttime = 0;
 		retval->starttime = 0;
 		retval->endtime = 0;
 		retval->req_offset = 0;
@@ -479,6 +604,208 @@ static int filed_logging_thread_init(FILE *logfp) {
 	pthread_create(&thread_id, NULL, filed_logging_thread, args);
 
 	filed_log_msg("START");
+
+	return(0);
+}
+#endif
+
+#ifdef FILED_DONT_TIMEOUT
+#define filed_sockettimeout_thread_init() 0
+#define filed_sockettimeout_init() 0
+#define filed_sockettimeout_accept(x) /**/
+#define filed_sockettimeout_processing_start(x) /**/
+#define filed_sockettimeout_processing_end(x) /**/
+#define filed_sockettimeout_close(x, y) /**/
+#else
+time_t filed_sockettimeout_time;
+struct {
+	time_t expiration_time;
+	pthread_t thread_id;
+	enum {
+		filed_sockettimeout_valid,
+		filed_sockettimeout_invalid,
+	} valid;
+} *filed_sockettimeout_sockstatus;
+long filed_sockettimeout_sockstatus_length;
+int filed_sockettimeout_devnull_fd;
+pthread_mutex_t filed_sockettimeout_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int filed_sockettimeout_sockfd_in_range(int sockfd) {
+	if (sockfd < 3) {
+		return(0);
+	}
+
+	if (sockfd > filed_sockettimeout_sockstatus_length) {
+		return(0);
+	}
+
+	return(1);
+}
+
+static void filed_sockettimeout_expire(int sockfd, int length, int lockheld) {
+	time_t now, expire;
+
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	now = filed_sockettimeout_time;
+
+	expire = now + length;
+
+	filed_sockettimeout_sockstatus[sockfd].expiration_time = expire;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
+
+	return;
+}
+
+static void filed_sockettimeout_accept(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	pthread_mutex_lock(&filed_sockettimeout_mutex);
+
+	filed_sockettimeout_expire(sockfd, 60, 1);
+
+	filed_sockettimeout_sockstatus[sockfd].thread_id = pthread_self();
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_valid;
+
+	pthread_mutex_unlock(&filed_sockettimeout_mutex);
+
+	return;
+}
+
+static void filed_sockettimeout_processing_start(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	filed_sockettimeout_expire(sockfd, 86400, 0);
+
+	return;
+}
+
+static void filed_sockettimeout_processing_end(int sockfd) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	filed_sockettimeout_expire(sockfd, 60, 0);
+
+	return;
+}
+
+static void filed_sockettimeout_close(int sockfd, int lockheld) {
+	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
+		return;
+	}
+
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_invalid;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
+
+	return;
+}
+
+static void *filed_sockettimeout_thread(void *arg) {
+	struct timespec sleep_time;
+	time_t now, expiration_time;
+	pthread_t thread_id;
+	long idx;
+	int count;
+	int valid;
+	int time_interval = 30;
+	int check_period = 90;
+
+	while (1) {
+		for (count = 0; count < (check_period / time_interval); count++) {
+			sleep_time.tv_sec = time_interval;
+			sleep_time.tv_nsec = 0;
+			nanosleep(&sleep_time, NULL);
+
+			pthread_mutex_lock(&filed_sockettimeout_mutex);
+
+			now = time(NULL);
+
+			filed_sockettimeout_time = now;
+
+			pthread_mutex_unlock(&filed_sockettimeout_mutex);
+		}
+
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+
+		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
+			valid = filed_sockettimeout_sockstatus[idx].valid;
+
+			if (valid != filed_sockettimeout_valid) {
+				continue;
+			}
+
+			expiration_time = filed_sockettimeout_sockstatus[idx].expiration_time;
+
+			thread_id = filed_sockettimeout_sockstatus[idx].thread_id;
+
+			if (expiration_time > now) {
+				continue;
+			}
+
+			filed_sockettimeout_close(idx, 1);
+
+			dup2(filed_sockettimeout_devnull_fd, idx);
+
+			pthread_kill(thread_id, SIGPIPE);
+		}
+
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
+
+	return(NULL);
+
+	/* NOTREACH: We don't actually take any arguments */
+	arg = arg;
+}
+
+static int filed_sockettimeout_thread_init(void) {
+	pthread_t thread_id;
+
+	pthread_create(&thread_id, NULL, filed_sockettimeout_thread, NULL);
+
+	return(0);
+}
+
+static int filed_sockettimeout_init(void) {
+	long maxfd, idx;
+
+	maxfd = sysconf(_SC_OPEN_MAX);
+	if (maxfd <= 0) {
+		maxfd = 4096;
+	}
+
+	filed_sockettimeout_sockstatus_length = maxfd;
+	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * filed_sockettimeout_sockstatus_length);
+	if (filed_sockettimeout_sockstatus == NULL) {
+		return(-1);
+	}
+
+	for (idx = 0; idx < maxfd; idx++) {
+		filed_sockettimeout_sockstatus[idx].valid = filed_sockettimeout_invalid;
+	}
+
+	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
+	if (filed_sockettimeout_devnull_fd < 0) {
+		return(-1);
+	}
 
 	return(0);
 }
@@ -567,29 +894,83 @@ static void filed_generate_etag(char *etag, size_t length) {
 	);
 }
 
+#ifdef FILED_FAKE_CHROOT
+/* Translate a path into a fake chroot path */
+static const char *filed_path_translate(const char *path, struct filed_options *options) {
+	static __thread char pathBuffer[8192];
+	int snprintf_ret;
+
+	/* If no alternative root is specified, return the unadorned path */
+	if (!options->fake_newroot) {
+		return(path);
+	}
+
+	/* Verify that this request will not go outside of the specified root */
+	if (strstr(path, "/../") != NULL || path[0] != '/') {
+		filed_log_msg_debug("Unable to translate path \"%s\", contains invalid characters", path);
+
+		return(options->fake_newroot);
+	}
+
+	/* Create the new path into our local (TLS) static buffer */
+	snprintf_ret = snprintf(pathBuffer, sizeof(pathBuffer), "%s/%s", options->fake_newroot, path);
+	if (snprintf_ret < 0 || ((unsigned int) snprintf_ret) >= sizeof(pathBuffer)) {
+		filed_log_msg_debug("Unable to translate path \"%s\", will not fit into new buffer", path);
+
+		return(options->fake_newroot);
+	}
+
+	filed_log_msg_debug("Translating path \"%s\" into \"%s\"", path, pathBuffer);
+
+	/* Return the new path */
+	return(pathBuffer);
+}
+
+static void filed_path_translate_set_root(const char *var, struct filed_options *options, const char *val) {
+	options->fake_newroot = strdup(val);
+
+	return;
+
+	/* var is only used in the macro -- discard it here */
+	var = var;
+}
+#else
+#define filed_path_translate(path, options) path
+#define filed_path_translate_set_root(var, options, val) var = strdup(val)
+#endif
+
 /* Open a file and return file information */
-static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer) {
+static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fileinfo *buffer, struct filed_options *options) {
 	struct filed_fileinfo *cache;
 	unsigned int cache_idx;
 	off_t len;
 	int fd;
 
-	cache_idx = filed_hash((const unsigned char *) path, filed_fileinfo_fdcache_size);
+	if (filed_fileinfo_fdcache_size != 0) {
+		cache_idx = filed_hash((const unsigned char *) path, filed_fileinfo_fdcache_size);
 
-	cache = &filed_fileinfo_fdcache[cache_idx];
+		cache = &filed_fileinfo_fdcache[cache_idx];
 
-	filed_log_msg_debug("Locking mutex for idx: %lu", (unsigned long) cache_idx);
+		filed_log_msg_debug("Locking mutex for idx: %lu", (unsigned long) cache_idx);
 
-	pthread_mutex_lock(&cache->mutex);
+		pthread_mutex_lock(&cache->mutex);
 
-	filed_log_msg_debug("Completed locking mutex for idx: %lu", (unsigned long) cache_idx);
+		filed_log_msg_debug("Completed locking mutex for idx: %lu", (unsigned long) cache_idx);
+	} else {
+		cache_idx = 0;
+		cache = buffer;
+		cache->path[0] = '\0';
+		cache->fd = -1;
+	}
 
 	if (strcmp(path, cache->path) != 0) {
 		filed_log_msg_debug("Cache miss for idx: %lu: OLD \"%s\", NEW \"%s\"", (unsigned long) cache_idx, cache->path, path);
 
-		fd = open(path, O_RDONLY | O_LARGEFILE);
+		fd = open(filed_path_translate(path, options), O_RDONLY | O_LARGEFILE);
 		if (fd < 0) {
-			pthread_mutex_unlock(&cache->mutex);
+			if (filed_fileinfo_fdcache_size != 0) {
+				pthread_mutex_unlock(&cache->mutex);
+			}
 
 			return(NULL);
 		}
@@ -613,27 +994,32 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		filed_log_msg_debug("Cache hit for idx: %lu: PATH \"%s\"", (unsigned long) cache_idx, path);
 	}
 
-	/*
-	 * We have to make a duplicate FD, because once we release the cache
-	 * mutex, the file descriptor may be closed
-	 */
-	fd = dup(cache->fd);
-	if (fd < 0) {
-		pthread_mutex_unlock(&cache->mutex);
+	if (filed_fileinfo_fdcache_size != 0) {
+		/*
+		 * We have to make a duplicate FD, because once we release the cache
+		 * mutex, the file descriptor may be closed
+		 */
+		fd = dup(cache->fd);
+		if (fd < 0) {
+			pthread_mutex_unlock(&cache->mutex);
 
-		return(NULL);
+			return(NULL);
+		}
+
+		buffer->fd = fd;
+		buffer->len = cache->len;
+		buffer->type = cache->type;
+		memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
+		memcpy(buffer->etag, cache->etag, sizeof(buffer->etag));
+		buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
+
+		pthread_mutex_unlock(&cache->mutex);
 	}
 
-	buffer->fd = fd;
-	buffer->len = cache->len;
-	buffer->type = cache->type;
-	memcpy(buffer->lastmod_b, cache->lastmod_b, sizeof(buffer->lastmod_b));
-	memcpy(buffer->etag, cache->etag, sizeof(buffer->etag));
-	buffer->lastmod = buffer->lastmod_b + (cache->lastmod - cache->lastmod_b);
-
-	pthread_mutex_unlock(&cache->mutex);
-
 	return(buffer);
+
+	/* options is only used if fake chroot is enabled, confuse the compiler */
+	options = options;
 }
 
 /* Process an HTTP request and return the path requested */
@@ -653,6 +1039,7 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 	range_request = 0;
 	range_length = -1;
 	buffer_st->headers.host.present = 0;
+	buffer_st->headers.connection = FILED_CONNECTION_CLOSE;
 
 	buffer = buffer_st->tmpbuf;
 	buffer_len = sizeof(buffer_st->tmpbuf);
@@ -752,6 +1139,8 @@ static struct filed_http_request *filed_get_http_request(FILE *fp, struct filed_
 			}
 
 			strcpy(buffer_st->headers.host.host, workbuffer);
+		} else if (strncasecmp(buffer, "Connection: Keep-Alive", 22) == 0) {
+			buffer_st->headers.connection = FILED_CONNECTION_KEEP_ALIVE;
 		}
 
 		if (memcmp(buffer, "\r\n", 2) == 0) {
@@ -826,14 +1215,17 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 	filed_log_entry(log);
 
 	/* Close connection */
+	filed_sockettimeout_close(fileno(fp), 0);
+
 	fclose(fp);
 
 	return;
 }
 
 /* Return a redirect to index.html */
+#ifndef FILED_DONT_REDIRECT_DIRECTORIES
 static void filed_redirect_index(FILE *fp, const char *date_current, const char *path, struct filed_log_entry *log) {
-	int http_code = 301;
+	int http_code = 302;
 	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: 0\r\nConnection: close\r\nLocation: %s\r\n\r\n",
 		http_code,
 		date_current,
@@ -848,6 +1240,8 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	filed_log_entry(log);
 
 	/* Close connection */
+	filed_sockettimeout_close(fileno(fp), 0);
+
 	fclose(fp);
 
 	return;
@@ -855,9 +1249,22 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	/* Currently unused: path */
 	path = path;
 }
+#endif
+
+/* Convert an enum representing the "Connection" header value to a string */
+static const char *filed_connection_str(int connection_value) {
+	switch (connection_value) {
+		case FILED_CONNECTION_CLOSE:
+			return("close");
+		case FILED_CONNECTION_KEEP_ALIVE:
+			return("keep-alive");
+	}
+
+	return("close");
+}
 
 /* Handle a single request from a client */
-static void filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log, struct filed_options *options) {
+static int filed_handle_client(int fd, struct filed_http_request *request, struct filed_log_entry *log, struct filed_options *options) {
 	struct filed_fileinfo *fileinfo;
 	ssize_t sendfile_ret;
 	size_t sendfile_size;
@@ -867,12 +1274,17 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 	int http_code;
 	FILE *fp;
 
+	/* Indicate the connection start time */
+	log->connecttime = time(NULL);
+
 	/* Determine current time */
 	date_current = filed_format_time(date_current_b, sizeof(date_current_b), time(NULL));
 
 	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
 	if (fp == NULL) {
+		filed_sockettimeout_close(fd, 0);
+
 		close(fd);
 
 		log->buffer[0] = '\0';
@@ -881,7 +1293,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 		filed_log_entry(log);
 
-		return;
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	request = filed_get_http_request(fp, request, options);
@@ -891,8 +1303,10 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 		filed_error_page(fp, date_current, 500, FILED_REQUEST_METHOD_GET, "format", log);
 
-		return;
+		return(FILED_CONNECTION_CLOSE);
 	}
+
+	filed_sockettimeout_processing_start(fd);
 
 	path = request->path;
 	strcpy(log->buffer, path);
@@ -900,16 +1314,31 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	/* If the requested path is a directory, redirect to index page */
 	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
+#ifdef FILED_DONT_REDIRECT_DIRECTORIES
+		char localpath[8192];
+		int snprintf_ret;
+
+		snprintf_ret = snprintf(localpath, sizeof(localpath), "%s/index.html", path);
+
+		if (snprintf_ret <= 0 || snprintf_ret > (sizeof(localpath) - 1)) {
+			filed_error_page(fp, date_current, 500, request->method, "path_format", log);
+
+			return(FILED_CONNECTION_CLOSE);
+		}
+
+		path = localpath;
+#else
 		filed_redirect_index(fp, date_current, path, log);
 
-		return;
+		return(FILED_CONNECTION_CLOSE);
+#endif
 	}
 
-	fileinfo = filed_open_file(path, &request->fileinfo);
+	fileinfo = filed_open_file(path, &request->fileinfo, options);
 	if (fileinfo == NULL) {
 		filed_error_page(fp, date_current, 404, request->method, "open_failed", log);
 
-		return;
+		return(FILED_CONNECTION_CLOSE);
 	}
 
 	if (request->headers.range.present) {
@@ -919,7 +1348,7 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 				close(fileinfo->fd);
 
-				return;
+				return(FILED_CONNECTION_CLOSE);
 			}
 
 			if (request->headers.range.length == ((off_t) -1)) {
@@ -947,12 +1376,13 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 		request->headers.range.length = fileinfo->len;
 	}
 
-	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: close\r\nETag: \"%s\"\r\n",
+	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nContent-Type: %s\r\nConnection: %s\r\nETag: \"%s\"\r\n",
 		http_code,
 		date_current,
 		fileinfo->lastmod,
 		(unsigned long long) request->headers.range.length,
 		fileinfo->type,
+		filed_connection_str(request->headers.connection),
 		fileinfo->etag
 	);
 
@@ -1045,9 +1475,17 @@ static void filed_handle_client(int fd, struct filed_http_request *request, stru
 
 	close(fileinfo->fd);
 
-	fclose(fp);
+	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
+		filed_sockettimeout_close(fd, 0);
 
-	return;
+		fclose(fp);
+
+		return(FILED_CONNECTION_CLOSE);
+	}
+
+	filed_sockettimeout_processing_end(fd);
+
+	return(FILED_CONNECTION_KEEP_ALIVE);
 }
 
 /* Handle incoming connections */
@@ -1059,7 +1497,8 @@ static void *filed_worker_thread(void *arg_v) {
 	struct sockaddr_in6 addr;
 	socklen_t addrlen;
 	int failure_count = 0, max_failure_count = FILED_MAX_FAILURE_COUNT;
-	int master_fd, fd;
+	int connection_state = FILED_CONNECTION_CLOSE;
+	int master_fd, fd = -1;
 
 	/* Read arguments */
 	arg = arg_v;
@@ -1083,9 +1522,13 @@ static void *filed_worker_thread(void *arg_v) {
 
 		log->type = FILED_LOG_TYPE_TRANSFER;
 
-		/* Accept a new client */
-		addrlen = sizeof(addr);
-		fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
+		/* If we closed the old connection, accept a new one */
+		if (connection_state == FILED_CONNECTION_CLOSE) {
+			/* Accept a new client */
+			addrlen = sizeof(addr);
+
+			fd = accept(master_fd, (struct sockaddr *) &addr, &addrlen);
+		}
 
 		/*
 		 * If we fail, make a note of it so we don't go into a loop of
@@ -1097,10 +1540,12 @@ static void *filed_worker_thread(void *arg_v) {
 
 			failure_count++;
 
-			free(log);
+			filed_log_free(log);
 
 			continue;
 		}
+
+		filed_sockettimeout_accept(fd);
 
 		/* Fill in log structure */
 		if (filed_log_ip((struct sockaddr *) &addr, log->ip, sizeof(log->ip)) == NULL) {
@@ -1114,7 +1559,7 @@ static void *filed_worker_thread(void *arg_v) {
 		failure_count = 0;
 
 		/* Handle socket */
-		filed_handle_client(fd, &request, log, options);
+		connection_state = filed_handle_client(fd, &request, log, options);
 	}
 
 	/* Report error */
@@ -1333,7 +1778,7 @@ static int filed_daemonize(void) {
 /* Run process */
 int main(int argc, char **argv) {
 	struct option options[12];
-	struct filed_options thread_options;
+	struct filed_options thread_options = {0};
 	const char *bind_addr = BIND_ADDR, *newroot = NULL, *log_file = LOG_FILE;
 	FILE *log_fp;
 	uid_t user = 0;
@@ -1343,9 +1788,6 @@ int main(int argc, char **argv) {
 	int setuid_enabled = 0, daemon_enabled = 0;
 	int ch;
 	int fd;
-
-	/* Set default values */
-	thread_options.vhosts_enabled = 0;
 
 	/* Process arguments */
 	filed_getopt_long_setopt(&options[0], "port", required_argument, 'p');
@@ -1384,7 +1826,7 @@ int main(int argc, char **argv) {
 				}
 				break;
 			case 'r':
-				newroot = strdup(optarg);
+				filed_path_translate_set_root(newroot, &thread_options, optarg);
 				break;
 			case 'l':
 				log_file = strdup(optarg);
@@ -1426,6 +1868,14 @@ int main(int argc, char **argv) {
 		perror("filed_listen");
 
 		return(1);
+	}
+
+	/* Initialize timeout structures */
+	init_ret = filed_sockettimeout_init();
+	if (init_ret != 0) {
+		perror("filed_sockettimeout_init");
+
+		return(8);
 	}
 
 	/* Become a daemon */
@@ -1484,6 +1934,14 @@ int main(int argc, char **argv) {
 		return(4);
 	}
 
+	/* Create socket termination thread */
+	init_ret = filed_sockettimeout_thread_init();
+	if (init_ret != 0) {
+		perror("filed_sockettimeout_thread_init");
+
+		return(7);
+	}
+
 	/* Create worker threads */
 	init_ret = filed_worker_threads_init(fd, thread_count, &thread_options);
 	if (init_ret != 0) {
@@ -1495,7 +1953,7 @@ int main(int argc, char **argv) {
 	/* Wait for threads to exit */
 	/* XXX:TODO: Monitor thread usage */
 	while (1) {
-		sleep(60);
+		sleep(86400);
 	}
 
 	/* Return in failure */
