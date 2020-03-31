@@ -724,10 +724,12 @@ static void *filed_sockettimeout_thread(void *arg) {
 	long idx;
 	int count;
 	int valid;
+	int time_interval = 30;
+	int check_period = 90;
 
 	while (1) {
-		for (count = 0; count < 10; count++) {
-			sleep_time.tv_sec = 30;
+		for (count = 0; count < (check_period / time_interval); count++) {
+			sleep_time.tv_sec = time_interval;
 			sleep_time.tv_nsec = 0;
 			nanosleep(&sleep_time, NULL);
 
