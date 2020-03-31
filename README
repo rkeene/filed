@@ -79,7 +79,7 @@ following tunables that can only be toggled during compile-time:
         index.html file in that directory so that no memory allocations are
         required;  This option lets the server generate the new path.
 
-   6. Enable seccomp (CFLAGS, -DFILED_DO_SECCOMP=1)
+   6. Enable seccomp (make FILED_DO_SECCOMP=1)
         Linux supports limiting the system calls that a process can make.
         This is called seccomp (SECure COMPuting).  Currently not all
         platforms have been tested with this so it is disabled by default.
