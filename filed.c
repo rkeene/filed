@@ -811,6 +811,36 @@ static int filed_sockettimeout_init(void) {
 }
 #endif
 
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <sys/ptrace.h>
+#include <stddef.h>
+
+static int filed_init_seccomp(void) {
+	struct sock_fprog filter;
+	struct sock_filter rules[] = {
+#include "filed.seccomp.h"
+	};
+	int prctl_ret;
+
+	/* Do not allow any privilege changes beyond this point */
+ 	prctl_ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	if (prctl_ret != 0) {
+		return(-1);
+	}
+
+	filter.len = sizeof(rules) / sizeof(*rules);
+	filter.filter = rules;
+
+	prctl_ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &filter);
+	if (prctl_ret != 0) {
+		return(-1);
+	}
+
+	return(0);
+}
+
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
 	struct tm timeinfo_tm, *timeinfo_tm_p;
@@ -1915,9 +1945,6 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	/* Do not allow any privilege changes beyond this point */
-	prctl(PR_SET_NO_NEW_PRIVS, 1);
-
 	/* Initialize */
 	init_ret = filed_init(cache_size);
 	if (init_ret != 0) {
@@ -1940,6 +1967,14 @@ int main(int argc, char **argv) {
 		perror("filed_sockettimeout_thread_init");
 
 		return(7);
+	}
+
+	/* Initialize seccomp */
+	init_ret = filed_init_seccomp();
+	if (init_ret != 0) {
+		perror("filed_init_seccomp");
+
+		return(9);
 	}
 
 	/* Create worker threads */

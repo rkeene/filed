@@ -1,0 +1,37 @@
+set allowed_common {
+	mmap munmap mprotect
+	clone set_robust_list
+	nanosleep
+	open close read write sendfile lseek fcntl
+	stat lstat fstat
+	dup dup2
+	futex rt_sigreturn
+}
+set allowed_i386 {
+	socketcall
+}
+set allowed_x86_64 {
+	accept
+}
+
+i386 {
+	if {$nr in $allowed_common} {
+		return allow
+	}
+	if {$nr in $allowed_i386} {
+		return allow
+	}
+
+	return trap
+}
+
+x86_64 {
+	if {$nr in $allowed_common} {
+		return allow
+	}
+	if {$nr in $allowed_x86_64} {
+		return allow
+	}
+
+	return trap
+}

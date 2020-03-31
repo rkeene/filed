@@ -16,12 +16,16 @@ all: filed
 filed: filed.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -o "$@" $^ $(LIBS)
 
-filed.o: $(srcdir)/filed.c filed-mime-types.h
+filed.o: $(srcdir)/filed.c filed-mime-types.h filed.seccomp.h
 
 filed-mime-types.h: $(srcdir)/generate-mime-types $(srcdir)/mime.types
 	'$(srcdir)/generate-mime-types' '$(MIMETYPES)' > filed-mime-types.h.new || \
 		'$(srcdir)/generate-mime-types' '$(srcdir)/mime.types' > filed-mime-types.h.new
 	mv filed-mime-types.h.new filed-mime-types.h
+
+filed.seccomp.h: $(srcdir)/filed.seccomp $(srcdir)/generate-seccomp-filter
+	$(srcdir)/generate-seccomp-filter filed.seccomp x86_64 "" i386 "" > filed.seccomp.h.new
+	mv filed.seccomp.h.new filed.seccomp.h
 
 install: filed $(srcdir)/filed.1
 	test -d "$(DESTDIR)$(mandir)/man1" || mkdir -p "$(DESTDIR)$(mandir)/man1"
@@ -31,9 +35,9 @@ install: filed $(srcdir)/filed.1
 
 clean:
 	rm -f filed filed.o
-	rm -f filed-mime-types.h.new
+	rm -f filed-mime-types.h.new filed.seccomp.h.new
 
 distclean: clean
-	rm -f filed-mime-types.h
+	rm -f filed-mime-types.h filed.seccomp.h
 
 .PHONY: all install clean distclean

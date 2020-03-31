@@ -1,4 +1,7 @@
 filed
 filed.o
+filed-mime-types.h.new
 filed-mime-types.h
+filed.seccomp.h.new
+filed.seccomp.h
 compiled
