@@ -21,31 +21,75 @@ for tryCompilerDir in "$(readlink -f ~/root/cross-compilers)" "$(readlink -f ~/d
 	setup_cc="${tryCompilerDir}/setup-cc"
 
 	platforms=(
-		$("${setup_cc}" | tail -n +2)
+		$("${setup_cc}" 2>/dev/null | tail -n +2)
 	)
 
-	for platform in "${platforms[@]}"; do
-		idx=$[$idx + 1]
-		(
-			workdir="workdir-buildPrecompiled-${idx}-$(openssl rand 20 -hex)-platform-${platform}" || exit 1
-			mkdir "${workdir}" || exit 1
-			cd "${workdir}" || exit 1
-
-			eval $("${setup_cc}" "${platform}")
-			make_extra=(
-				-f ../Makefile
-				srcdir=..
-				CC="${CC}"
-			)
-
-			case "${platform}" in
-				*-musl-*|*-musl)
-					make_extra=("${make_extra[@]}" FILED_EXTRA_LDFLAGS="-static")
+	for platformBase in "${platforms[@]}"; do
+		for platformAdditional in "" ".seccomp" ".fakechroot" ".internaldirhandle"; do
+			case "${platformAdditional}" in
+				*.seccomp|*.seccomp.*)
+					# seccomp only works on i386/x86_64 for now
+					case "${platformBase}" in
+						i?86-*|x86_64-*)
+							;;
+						*)
+							continue
+							;;
+					esac
 					;;
 			esac
 
-			make "${make_extra[@]}" > filed.log 2>&1 </dev/null || mv filed.log filed-failed.log
-		) &
+			platform="${platformBase}${platformAdditional}"
+			echo "-- ${platform}"
+
+			idx=$[$idx + 1]
+			(
+				workdir="workdir-buildPrecompiled-${idx}-$(openssl rand 20 -hex)-platform-${platform}" || exit 1
+				mkdir "${workdir}" || exit 1
+				cd "${workdir}" || exit 1
+
+				make_extra=(
+					-f ../Makefile
+					srcdir=..
+				)
+
+				extra_cflags=""
+				while true; do
+					case "${platform}" in
+						*.seccomp|*.seccomp.*)
+							platform="$(echo "${platform}" | sed 's@\.seccomp@@')"
+							make_extra+=(FILED_DO_SECCOMP=1)
+							;;
+						*.fakechroot|*.fakechroot.*)
+							platform="$(echo "${platform}" | sed 's@\.fakechroot@@')"
+							extra_cflags="${extra_cflags} -DFILED_FAKE_CHROOT=1"
+							;;
+						*.internaldirhandle|*.internaldirhandle.*)
+							platform="$(echo "${platform}" | sed 's@\.internaldirhandle@@')"
+							extra_cflags="${extra_cflags} -DFILED_DONT_REDIRECT_DIRECTORIES=1"
+							;;
+						*)
+							break
+							;;
+					esac
+				done
+
+				case "${platform}" in
+					*-musl-*|*-musl)
+						make_extra+=(FILED_EXTRA_LDFLAGS="-static")
+						;;
+				esac
+
+				eval $("${setup_cc}" "${platform}")
+
+				make_extra+=("CC=${CC}")
+				if [ -n "${extra_cflags}" ]; then
+					make_extra+=(FILED_EXTRA_CFLAGS="${extra_cflags}")
+				fi
+
+				make "${make_extra[@]}" > filed.log 2>&1 </dev/null || mv filed.log filed-failed.log
+			) &
+		done
 	done
 done
 
