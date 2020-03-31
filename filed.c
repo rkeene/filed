@@ -60,6 +60,7 @@
 /* Fuzzing Test Code */
 #ifdef FILED_TEST_AFL
 #define FILED_DONT_LOG 1
+#define FILED_DONT_TIMEOUT 1
 #define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
 #define bind(x, y, z) afl_bind(x, y, z)
 #define socket(x, y, z) 8193

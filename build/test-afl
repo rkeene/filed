@@ -1,0 +1,49 @@
+#! /usr/bin/env bash
+
+PATH="/opt/appfs/rkeene.org/afl/platform/latest/bin:${PATH:-/dev/null/null}"
+export PATH
+
+set -e
+
+sourcedir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+workdir=''
+inputdir=''
+outputdir=''
+function cleanup() {
+	cd /
+	if [ -n "${outputdir}" -a -d "${outputdir}" ]; then
+		cp -rp "${outputdir}" "${sourcedir}/build/afl-$(uname -n | cut -f 1 -d .)-$(stat -c %Y "${outputdir}")"
+	fi
+
+	if [ -n "${workdir}" ]; then
+		rm -rf "${workdir}"
+		workdir=''
+	fi
+}
+trap cleanup EXIT
+
+workdir="$(mktemp -d)"
+inputdir="${workdir}/input"
+outputdir="${workdir}/output"
+mkdir "${workdir}/src"
+
+cp -r "${sourcedir}"/* "${workdir}/src/"
+
+(
+	set -e
+
+	cd "${workdir}"
+	mkdir "${inputdir}" "${outputdir}"
+
+	echo $'GET /etc/passwd HTTP/1.1\x0d\x0aHost: example.com\x0d\x0a\x0d\x0a' > input/test-1
+
+	cd 'src'
+	make distclean
+	make CC=afl-gcc FILED_EXTRA_CFLAGS=-DFILED_TEST_AFL=1
+
+	#export AFL_SKIP_CPUFREQ=1
+	afl-fuzz -i "${inputdir}" -o "${outputdir}" -- ./filed
+)
+
+exit 0
