@@ -182,6 +182,7 @@ struct filed_log_entry {
 	/* Items for type = TRANSFER */
 	int http_code;
 	const char *reason;
+	time_t connecttime;
 	time_t starttime;
 	time_t endtime;
 	off_t req_offset;
@@ -464,10 +465,11 @@ static void *filed_logging_thread(void *arg_p) {
 						curr->endtime = now;
 					}
 
-					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i CLIENT.TIME.CONNECT=%llu REQUEST.TIME.START=%llu REQUEST.TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
 						method,
 						curr->buffer,
 						curr->ip, curr->port,
+						(unsigned long long) curr->connecttime,
 						(unsigned long long) curr->starttime,
 						(unsigned long long) curr->endtime,
 						curr->http_code, curr->reason,
@@ -518,6 +520,7 @@ static struct filed_log_entry *filed_log_new(int initialize) {
 	if (initialize) {
 		retval->buffer[0] = '\0';
 		retval->http_code = -1;
+		retval->connecttime = 0;
 		retval->starttime = 0;
 		retval->endtime = 0;
 		retval->req_offset = 0;
@@ -1267,6 +1270,9 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	char *date_current, date_current_b[64];
 	int http_code;
 	FILE *fp;
+
+	/* Indicate the connection start time */
+	log->connecttime = time(NULL);
 
 	/* Determine current time */
 	date_current = filed_format_time(date_current_b, sizeof(date_current_b), time(NULL));
