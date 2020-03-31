@@ -43,31 +43,6 @@
 #include <time.h>
 #include <pwd.h>
 
-/*
- * Determine if the C compiler supports C11 atomics
- */
-#if __STDC_VERSION__ >= 201112L
-#  ifndef __STDC_NO_ATOMICS__
-#    define FILED_FEATURE_C11_ATOMICS 1
-#  endif
-#endif
-
-/*
- * If the C compiler does not support C11 atomics, disable TIMEOUT support
- * since it relies upon it
- */
-#ifndef FILED_FEATURE_C11_ATOMICS
-#  define FILED_DONT_TIMEOUT 1
-#endif
-
-/*
- * These headers are only required for TIMEOUT support
- */
-#ifndef FILED_DONT_TIMEOUT
-#include <stdatomic.h>
-#include <stdbool.h>
-#endif
-
 /* Compile time constants */
 #define FILED_VERSION "1.21"
 #define FILED_SENDFILE_MAX 16777215
@@ -85,7 +60,6 @@
 /* Fuzzing Test Code */
 #ifdef FILED_TEST_AFL
 #define FILED_DONT_LOG 1
-#define FILED_DONT_TIMEOUT 1
 #define pthread_create(a, x, y, z) afl_pthread_create(a, x, y, z)
 #define bind(x, y, z) afl_bind(x, y, z)
 #define socket(x, y, z) 8193
@@ -208,6 +182,7 @@ struct filed_log_entry {
 	/* Items for type = TRANSFER */
 	int http_code;
 	const char *reason;
+	time_t connecttime;
 	time_t starttime;
 	time_t endtime;
 	off_t req_offset;
@@ -490,10 +465,11 @@ static void *filed_logging_thread(void *arg_p) {
 						curr->endtime = now;
 					}
 
-					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i TIME.START=%llu TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
+					fprintf(fp, "TRANSFER METHOD=%s PATH=%s SRC=%s:%i CLIENT.TIME.CONNECT=%llu REQUEST.TIME.START=%llu REQUEST.TIME.END=%llu CODE.VALUE=%u CODE.REASON=%s REQUEST.OFFSET=%llu REQUEST.LENGTH=%llu FILE.LENGTH=%llu TRANSFER.LENGTH=%llu",
 						method,
 						curr->buffer,
 						curr->ip, curr->port,
+						(unsigned long long) curr->connecttime,
 						(unsigned long long) curr->starttime,
 						(unsigned long long) curr->endtime,
 						curr->http_code, curr->reason,
@@ -544,6 +520,7 @@ static struct filed_log_entry *filed_log_new(int initialize) {
 	if (initialize) {
 		retval->buffer[0] = '\0';
 		retval->http_code = -1;
+		retval->connecttime = 0;
 		retval->starttime = 0;
 		retval->endtime = 0;
 		retval->req_offset = 0;
@@ -637,16 +614,20 @@ static int filed_logging_thread_init(FILE *logfp) {
 #define filed_sockettimeout_accept(x) /**/
 #define filed_sockettimeout_processing_start(x) /**/
 #define filed_sockettimeout_processing_end(x) /**/
-#define filed_sockettimeout_close(x) /**/
+#define filed_sockettimeout_close(x, y) /**/
 #else
-_Atomic time_t filed_sockettimeout_time;
+time_t filed_sockettimeout_time;
 struct {
-	_Atomic time_t expiration_time;
-	_Atomic pthread_t thread_id;
-	bool valid;
-}* filed_sockettimeout_sockstatus;
+	time_t expiration_time;
+	pthread_t thread_id;
+	enum {
+		filed_sockettimeout_valid,
+		filed_sockettimeout_invalid,
+	} valid;
+} *filed_sockettimeout_sockstatus;
 long filed_sockettimeout_sockstatus_length;
 int filed_sockettimeout_devnull_fd;
+pthread_mutex_t filed_sockettimeout_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int filed_sockettimeout_sockfd_in_range(int sockfd) {
 	if (sockfd < 3) {
@@ -660,14 +641,22 @@ static int filed_sockettimeout_sockfd_in_range(int sockfd) {
 	return(1);
 }
 
-static void filed_sockettimeout_expire(int sockfd, int length) {
+static void filed_sockettimeout_expire(int sockfd, int length, int lockheld) {
 	time_t now, expire;
 
-	now = atomic_load(&filed_sockettimeout_time);
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	now = filed_sockettimeout_time;
 
 	expire = now + length;
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].expiration_time, expire);
+	filed_sockettimeout_sockstatus[sockfd].expiration_time = expire;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
 
 	return;
 }
@@ -677,11 +666,15 @@ static void filed_sockettimeout_accept(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 60);
+	pthread_mutex_lock(&filed_sockettimeout_mutex);
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].thread_id, pthread_self());
+	filed_sockettimeout_expire(sockfd, 60, 1);
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, true);
+	filed_sockettimeout_sockstatus[sockfd].thread_id = pthread_self();
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_valid;
+
+	pthread_mutex_unlock(&filed_sockettimeout_mutex);
 
 	return;
 }
@@ -691,7 +684,7 @@ static void filed_sockettimeout_processing_start(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 86400);
+	filed_sockettimeout_expire(sockfd, 86400, 0);
 
 	return;
 }
@@ -701,17 +694,25 @@ static void filed_sockettimeout_processing_end(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 60);
+	filed_sockettimeout_expire(sockfd, 60, 0);
 
 	return;
 }
 
-static void filed_sockettimeout_close(int sockfd) {
+static void filed_sockettimeout_close(int sockfd, int lockheld) {
 	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
 		return;
 	}
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, false);
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_invalid;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
 
 	return;
 }
@@ -722,40 +723,50 @@ static void *filed_sockettimeout_thread(void *arg) {
 	pthread_t thread_id;
 	long idx;
 	int count;
-	bool valid;
+	int valid;
+	int time_interval = 30;
+	int check_period = 90;
 
 	while (1) {
-		for (count = 0; count < 10; count++) {
-			sleep_time.tv_sec = 30;
+		for (count = 0; count < (check_period / time_interval); count++) {
+			sleep_time.tv_sec = time_interval;
 			sleep_time.tv_nsec = 0;
 			nanosleep(&sleep_time, NULL);
 
+			pthread_mutex_lock(&filed_sockettimeout_mutex);
+
 			now = time(NULL);
 
-			atomic_store(&filed_sockettimeout_time, now);
+			filed_sockettimeout_time = now;
+
+			pthread_mutex_unlock(&filed_sockettimeout_mutex);
 		}
 
-		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
-			valid = atomic_load(&filed_sockettimeout_sockstatus[idx].valid);
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
 
-			if (!valid) {
+		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
+			valid = filed_sockettimeout_sockstatus[idx].valid;
+
+			if (valid != filed_sockettimeout_valid) {
 				continue;
 			}
 
-			expiration_time = atomic_load(&filed_sockettimeout_sockstatus[idx].expiration_time);
+			expiration_time = filed_sockettimeout_sockstatus[idx].expiration_time;
 
-			thread_id = atomic_load(&filed_sockettimeout_sockstatus[idx].thread_id);
+			thread_id = filed_sockettimeout_sockstatus[idx].thread_id;
 
 			if (expiration_time > now) {
 				continue;
 			}
 
-			filed_sockettimeout_close(idx);
+			filed_sockettimeout_close(idx, 1);
 
 			dup2(filed_sockettimeout_devnull_fd, idx);
 
 			pthread_kill(thread_id, SIGPIPE);
 		}
+
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
 	}
 
 	return(NULL);
@@ -780,16 +791,16 @@ static int filed_sockettimeout_init(void) {
 		maxfd = 4096;
 	}
 
-	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * maxfd);
+	filed_sockettimeout_sockstatus_length = maxfd;
+	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * filed_sockettimeout_sockstatus_length);
 	if (filed_sockettimeout_sockstatus == NULL) {
 		return(-1);
 	}
 
 	for (idx = 0; idx < maxfd; idx++) {
-		filed_sockettimeout_sockstatus[idx].valid = false;
+		filed_sockettimeout_sockstatus[idx].valid = filed_sockettimeout_invalid;
 	}
 
-	filed_sockettimeout_sockstatus_length = maxfd;
 	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
 	if (filed_sockettimeout_devnull_fd < 0) {
 		return(-1);
@@ -1203,7 +1214,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 	filed_log_entry(log);
 
 	/* Close connection */
-	filed_sockettimeout_close(fileno(fp));
+	filed_sockettimeout_close(fileno(fp), 0);
 
 	fclose(fp);
 
@@ -1228,7 +1239,7 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	filed_log_entry(log);
 
 	/* Close connection */
-	filed_sockettimeout_close(fileno(fp));
+	filed_sockettimeout_close(fileno(fp), 0);
 
 	fclose(fp);
 
@@ -1262,13 +1273,16 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	int http_code;
 	FILE *fp;
 
+	/* Indicate the connection start time */
+	log->connecttime = time(NULL);
+
 	/* Determine current time */
 	date_current = filed_format_time(date_current_b, sizeof(date_current_b), time(NULL));
 
 	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
 	if (fp == NULL) {
-		filed_sockettimeout_close(fd);
+		filed_sockettimeout_close(fd, 0);
 
 		close(fd);
 
@@ -1461,7 +1475,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	close(fileinfo->fd);
 
 	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
-		filed_sockettimeout_close(fd);
+		filed_sockettimeout_close(fd, 0);
 
 		fclose(fp);
 

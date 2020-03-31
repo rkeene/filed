@@ -55,25 +55,17 @@ following tunables that can only be toggled during compile-time:
 	not engaged and the logging functions are not compiled at all.
 	This results in a slightly smaller and faster binary
 
-   2. Kill idle connections (CFLAGS, -DFILED_DONT_TIMEOUT=1)
-        Killing idle connections relies heavily upon C11 atomics.  This
-        requires a relatively new version of GCC (4.9+) or other C compiler
-        that implements this aspect of C11 and so it can be disabled at
-        compile time (which is the only time it makes sense).  One day an
-        alternate implementation might be present that uses a mutex instead
-        of atomics at which point this documentation will be updated.
-
-   3. Debugging (CFLAGS, -DFILED_DEBUG=1)
+   2. Debugging (CFLAGS, -DFILED_DEBUG=1)
 	This is an internal option and should only be used during development.
 
-   4. Differing HTTP semantics (CFLAGS, -DFILED_NONBLOCK_HTTP=1)
+   3. Differing HTTP semantics (CFLAGS, -DFILED_NONBLOCK_HTTP=1)
 	It is possible that some HTTP clients may not process the HTTP stream
 	being delivered if they cannot write to the HTTP stream itself.  This
 	has not been observed yet, but it is possible.  If these semantics are
 	needed (and they should not be) then they can be enabled with this
 	flag at the cost of performance.
 
-   5. Differing chroot() semantics (CFLAGS, -DFILED_FAKE_CHROOT=1)
+   4. Differing chroot() semantics (CFLAGS, -DFILED_FAKE_CHROOT=1)
         In some cases it is desirable to mangle paths with a path prefix
         rather than call chroot() at startup.  This is less secure and slower
         and should be generally avoided -- however it may be necessary to do.
@@ -82,12 +74,12 @@ following tunables that can only be toggled during compile-time:
         chroot() all HTTP requests will have the root suffix specified as the
         argument to the "-r" or "--root" option prepended to them.
 
-   6. Differing "index.html" handling (CFLAGS, -DFILED_DONT_REDIRECT_DIRECTORIES=1)
+   5. Differing "index.html" handling (CFLAGS, -DFILED_DONT_REDIRECT_DIRECTORIES=1)
         Normally "filed" redirects users who request a directory to the
         index.html file in that directory so that no memory allocations are
         required;  This option lets the server generate the new path.
 
-   7. MIME Types (MIMETYPES)
+   6. MIME Types (MIMETYPES)
 	For single-file convenience "filed" compiles the mapping of file
 	extensions (the string in the filename following its last dot ("."))
 	into the executable.  This mapping comes from a file in the format of
@@ -108,18 +100,3 @@ but if the process does not support log rotation then it will not provide that
 benefit.  For example, if you wish to write logs to syslogd(8) you can use
 logger(1), such as:
 	# ./filed --root /www --user nobody --log '|logger -t filed' --daemon
-
-Troubleshooting
----------------
-   1. It won't compile, something about stdatomic.h not found or _Atomic not
-      a valid type.
-
-      => This is a bug in your compiler:
-            https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58016
-
-         GCC 4.7.x and 4.8.x define the macro indicating that they have C11
-         support and do not define the macro that C11 requires to indicate
-         that C11 atomics are not available.  They should define that macro.
-
-         You can disable the features in "filed" that require C11 atomics by
-         defining FILED_DONT_TIMEOUT in the Makefile.
