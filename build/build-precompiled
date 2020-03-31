@@ -44,7 +44,7 @@ for tryCompilerDir in "$(readlink -f ~/root/cross-compilers)" "$(readlink -f ~/d
 					;;
 			esac
 
-			make "${make_extra[@]}"
+			make "${make_extra[@]}" > filed.log 2>&1 </dev/null || mv filed.log filed-failed.log
 		) &
 	done
 done
@@ -57,6 +57,10 @@ mkdir -p compiled
 for binary in workdir-buildPrecompiled-*/filed; do
 	platform="$(echo "${binary}" | sed 's@^.*-platform-@@;s@/.*$@@')"
 	mv "${binary}" "compiled/filed-${version}-${platform}"
+done
+for errorLog in workdir-buildPrecompiled-*/filed-failed.log; do
+	platform="$(echo "${errorLog}" | sed 's@^.*-platform-@@;s@/.*$@@')"
+	mv "${errorLog}" "compiled/filed-${version}-${platform}-error.log"
 done
 
 # Cleanup

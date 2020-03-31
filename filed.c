@@ -25,7 +25,6 @@
 #include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/prctl.h>
 #include <arpa/inet.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -607,7 +606,7 @@ static int filed_logging_thread_init(FILE *logfp) {
 
 	return(0);
 }
-#endif
+#endif /* FILED_DONT_LOG */
 
 #ifdef FILED_DONT_TIMEOUT
 #define filed_sockettimeout_thread_init() 0
@@ -728,6 +727,8 @@ static void *filed_sockettimeout_thread(void *arg) {
 	int time_interval = 30;
 	int check_period = 90;
 
+	filed_sockettimeout_time = time(NULL);
+
 	while (1) {
 		for (count = 0; count < (check_period / time_interval); count++) {
 			sleep_time.tv_sec = time_interval;
@@ -756,7 +757,7 @@ static void *filed_sockettimeout_thread(void *arg) {
 
 			thread_id = filed_sockettimeout_sockstatus[idx].thread_id;
 
-			if (expiration_time > now) {
+			if (expiration_time > filed_sockettimeout_time) {
 				continue;
 			}
 
@@ -809,12 +810,16 @@ static int filed_sockettimeout_init(void) {
 
 	return(0);
 }
-#endif
+#endif /* FILED_DONT_TIMEOUT */
 
+#ifndef FILED_DO_SECCOMP
+#define filed_init_seccomp() 0
+#else
 #include <linux/seccomp.h>
 #include <linux/filter.h>
 #include <linux/audit.h>
 #include <sys/ptrace.h>
+#include <sys/prctl.h>
 #include <stddef.h>
 
 static int filed_init_seccomp(void) {
@@ -840,6 +845,7 @@ static int filed_init_seccomp(void) {
 
 	return(0);
 }
+#endif /* FILED_DO_SECCOMP */
 
 /* Format time per RFC2616 */
 static char *filed_format_time(char *buffer, size_t buffer_len, const time_t timeinfo) {
@@ -1706,7 +1712,7 @@ static void filed_print_help(FILE *output, int long_help, const char *extra) {
 
 /* Add a getopt option */
 static void filed_getopt_long_setopt(struct option *opt, const char *name, int has_arg, int val) {
-	opt->name     = name;
+	opt->name     = (const char *) name;
 	opt->has_arg  = has_arg;
 	opt->flag     = NULL;
 	opt->val      = val;
@@ -1818,6 +1824,9 @@ int main(int argc, char **argv) {
 	int setuid_enabled = 0, daemon_enabled = 0;
 	int ch;
 	int fd;
+
+	/* Set default value */
+	thread_options.fake_newroot = NULL;
 
 	/* Process arguments */
 	filed_getopt_long_setopt(&options[0], "port", required_argument, 'p');

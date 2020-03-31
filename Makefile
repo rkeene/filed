@@ -24,7 +24,7 @@ filed-mime-types.h: $(srcdir)/generate-mime-types $(srcdir)/mime.types
 	mv filed-mime-types.h.new filed-mime-types.h
 
 filed.seccomp.h: $(srcdir)/filed.seccomp $(srcdir)/generate-seccomp-filter
-	$(srcdir)/generate-seccomp-filter filed.seccomp x86_64 "" i386 "" > filed.seccomp.h.new
+	$(srcdir)/generate-seccomp-filter $(srcdir)/filed.seccomp x86_64 "" i386 "" > filed.seccomp.h.new
 	mv filed.seccomp.h.new filed.seccomp.h
 
 install: filed $(srcdir)/filed.1
