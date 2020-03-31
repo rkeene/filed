@@ -44,7 +44,7 @@
 #include <pwd.h>
 
 /* Compile time constants */
-#define FILED_VERSION "1.19"
+#define FILED_VERSION "1.21"
 #define FILED_SENDFILE_MAX 16777215
 #define FILED_MAX_FAILURE_COUNT 30
 #define FILED_DEFAULT_TYPE "application/octet-stream"
@@ -274,6 +274,8 @@ static int filed_init_cache(unsigned int cache_size) {
 /* Initialize process */
 static int filed_init(unsigned int cache_size) {
 	static int called = 0;
+	struct sigaction signal_handler_info;
+	sigset_t signal_handler_mask;
 	ssize_t read_ret = 0;
 	unsigned int random_value = 0;
 	int cache_ret;
@@ -288,11 +290,20 @@ static int filed_init(unsigned int cache_size) {
 	/* Attempt to lock all memory to physical RAM (but don't care if we can't) */
 	mlockall(MCL_CURRENT | MCL_FUTURE);
 
-	/* Ignore SIGPIPE */
-	signal(SIGPIPE, SIG_IGN);
+	/* Establish signal handlers */
+	/* SIGPIPE should interrupt system calls */
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = SA_RESTART;
+	sigaction(SIGPIPE, &signal_handler_info, NULL);
 
 	/* Handle SIGHUP to release all caches */
-	signal(SIGHUP, filed_signal_handler);
+	sigfillset(&signal_handler_mask);
+	signal_handler_info.sa_handler = filed_signal_handler;
+	signal_handler_info.sa_mask = signal_handler_mask;
+	signal_handler_info.sa_flags = 0;
+	sigaction(SIGHUP, &signal_handler_info, NULL);
 
 	/* Initialize cache structure */
 	cache_ret = filed_init_cache(cache_size);
@@ -607,7 +618,7 @@ struct {
 	time_t expiration_time;
 	pthread_t thread_id;
 	int valid;
-}* filed_sockettimeout_sockstatus;
+} *filed_sockettimeout_sockstatus;
 long filed_sockettimeout_sockstatus_length;
 int filed_sockettimeout_devnull_fd;
 
@@ -680,6 +691,7 @@ static void filed_sockettimeout_close(int sockfd) {
 }
 
 static void *filed_sockettimeout_thread(void *arg) {
+	struct timespec sleep_time;
 	time_t now, expiration_time;
 	pthread_t thread_id;
 	long idx;
@@ -688,7 +700,9 @@ static void *filed_sockettimeout_thread(void *arg) {
 
 	while (1) {
 		for (count = 0; count < 10; count++) {
-			usleep(30000000);
+			sleep_time.tv_sec = 30;
+			sleep_time.tv_nsec = 0;
+			nanosleep(&sleep_time, NULL);
 
 			now = time(NULL);
 
@@ -740,7 +754,8 @@ static int filed_sockettimeout_init(void) {
 		maxfd = 4096;
 	}
 
-	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * maxfd);
+	filed_sockettimeout_sockstatus_length = maxfd;
+	filed_sockettimeout_sockstatus = malloc(sizeof(*filed_sockettimeout_sockstatus) * filed_sockettimeout_sockstatus_length);
 	if (filed_sockettimeout_sockstatus == NULL) {
 		return(-1);
 	}
@@ -749,7 +764,6 @@ static int filed_sockettimeout_init(void) {
 		filed_sockettimeout_sockstatus[idx].valid = false;
 	}
 
-	filed_sockettimeout_sockstatus_length = maxfd;
 	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
 	if (filed_sockettimeout_devnull_fd < 0) {
 		return(-1);
@@ -1171,8 +1185,9 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 }
 
 /* Return a redirect to index.html */
+#ifndef FILED_DONT_REDIRECT_DIRECTORIES
 static void filed_redirect_index(FILE *fp, const char *date_current, const char *path, struct filed_log_entry *log) {
-	int http_code = 301;
+	int http_code = 302;
 	fprintf(fp, "HTTP/1.1 %i OK\r\nDate: %s\r\nServer: filed\r\nLast-Modified: %s\r\nContent-Length: 0\r\nConnection: close\r\nLocation: %s\r\n\r\n",
 		http_code,
 		date_current,
@@ -1196,6 +1211,7 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	/* Currently unused: path */
 	path = path;
 }
+#endif
 
 /* Convert an enum representing the "Connection" header value to a string */
 static const char *filed_connection_str(int connection_value) {
@@ -1257,9 +1273,24 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 
 	/* If the requested path is a directory, redirect to index page */
 	if (request->type == FILED_REQUEST_TYPE_DIRECTORY) {
+#ifdef FILED_DONT_REDIRECT_DIRECTORIES
+		char localpath[8192];
+		int snprintf_ret;
+
+		snprintf_ret = snprintf(localpath, sizeof(localpath), "%s/index.html", path);
+
+		if (snprintf_ret <= 0 || snprintf_ret > (sizeof(localpath) - 1)) {
+			filed_error_page(fp, date_current, 500, request->method, "path_format", log);
+
+			return(FILED_CONNECTION_CLOSE);
+		}
+
+		path = localpath;
+#else
 		filed_redirect_index(fp, date_current, path, log);
 
 		return(FILED_CONNECTION_CLOSE);
+#endif
 	}
 
 	fileinfo = filed_open_file(path, &request->fileinfo, options);
@@ -1878,7 +1909,7 @@ int main(int argc, char **argv) {
 	/* Wait for threads to exit */
 	/* XXX:TODO: Monitor thread usage */
 	while (1) {
-		sleep(60);
+		sleep(86400);
 	}
 
 	/* Return in failure */
