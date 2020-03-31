@@ -611,16 +611,20 @@ static int filed_logging_thread_init(FILE *logfp) {
 #define filed_sockettimeout_accept(x) /**/
 #define filed_sockettimeout_processing_start(x) /**/
 #define filed_sockettimeout_processing_end(x) /**/
-#define filed_sockettimeout_close(x) /**/
+#define filed_sockettimeout_close(x, y) /**/
 #else
 time_t filed_sockettimeout_time;
 struct {
 	time_t expiration_time;
 	pthread_t thread_id;
-	int valid;
+	enum {
+		filed_sockettimeout_valid,
+		filed_sockettimeout_invalid,
+	} valid;
 } *filed_sockettimeout_sockstatus;
 long filed_sockettimeout_sockstatus_length;
 int filed_sockettimeout_devnull_fd;
+pthread_mutex_t filed_sockettimeout_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int filed_sockettimeout_sockfd_in_range(int sockfd) {
 	if (sockfd < 3) {
@@ -634,14 +638,22 @@ static int filed_sockettimeout_sockfd_in_range(int sockfd) {
 	return(1);
 }
 
-static void filed_sockettimeout_expire(int sockfd, int length) {
+static void filed_sockettimeout_expire(int sockfd, int length, int lockheld) {
 	time_t now, expire;
 
-	now = atomic_load(&filed_sockettimeout_time);
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	now = filed_sockettimeout_time;
 
 	expire = now + length;
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].expiration_time, expire);
+	filed_sockettimeout_sockstatus[sockfd].expiration_time = expire;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
 
 	return;
 }
@@ -651,11 +663,15 @@ static void filed_sockettimeout_accept(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 60);
+	pthread_mutex_lock(&filed_sockettimeout_mutex);
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].thread_id, pthread_self());
+	filed_sockettimeout_expire(sockfd, 60, 1);
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, true);
+	filed_sockettimeout_sockstatus[sockfd].thread_id = pthread_self();
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_valid;
+
+	pthread_mutex_unlock(&filed_sockettimeout_mutex);
 
 	return;
 }
@@ -665,7 +681,7 @@ static void filed_sockettimeout_processing_start(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 86400);
+	filed_sockettimeout_expire(sockfd, 86400, 0);
 
 	return;
 }
@@ -675,17 +691,25 @@ static void filed_sockettimeout_processing_end(int sockfd) {
 		return;
 	}
 
-	filed_sockettimeout_expire(sockfd, 60);
+	filed_sockettimeout_expire(sockfd, 60, 0);
 
 	return;
 }
 
-static void filed_sockettimeout_close(int sockfd) {
+static void filed_sockettimeout_close(int sockfd, int lockheld) {
 	if (!filed_sockettimeout_sockfd_in_range(sockfd)) {
 		return;
 	}
 
-	atomic_store(&filed_sockettimeout_sockstatus[sockfd].valid, false);
+	if (!lockheld) {
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
+	}
+
+	filed_sockettimeout_sockstatus[sockfd].valid = filed_sockettimeout_invalid;
+
+	if (!lockheld) {
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
+	}
 
 	return;
 }
@@ -704,32 +728,40 @@ static void *filed_sockettimeout_thread(void *arg) {
 			sleep_time.tv_nsec = 0;
 			nanosleep(&sleep_time, NULL);
 
+			pthread_mutex_lock(&filed_sockettimeout_mutex);
+
 			now = time(NULL);
 
-			atomic_store(&filed_sockettimeout_time, now);
+			filed_sockettimeout_time = now;
+
+			pthread_mutex_unlock(&filed_sockettimeout_mutex);
 		}
 
-		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
-			valid = atomic_load(&filed_sockettimeout_sockstatus[idx].valid);
+		pthread_mutex_lock(&filed_sockettimeout_mutex);
 
-			if (!valid) {
+		for (idx = 0; idx < filed_sockettimeout_sockstatus_length; idx++) {
+			valid = filed_sockettimeout_sockstatus[idx].valid;
+
+			if (valid != filed_sockettimeout_valid) {
 				continue;
 			}
 
-			expiration_time = atomic_load(&filed_sockettimeout_sockstatus[idx].expiration_time);
+			expiration_time = filed_sockettimeout_sockstatus[idx].expiration_time;
 
-			thread_id = atomic_load(&filed_sockettimeout_sockstatus[idx].thread_id);
+			thread_id = filed_sockettimeout_sockstatus[idx].thread_id;
 
 			if (expiration_time > now) {
 				continue;
 			}
 
-			filed_sockettimeout_close(idx);
+			filed_sockettimeout_close(idx, 1);
 
 			dup2(filed_sockettimeout_devnull_fd, idx);
 
 			pthread_kill(thread_id, SIGPIPE);
 		}
+
+		pthread_mutex_unlock(&filed_sockettimeout_mutex);
 	}
 
 	return(NULL);
@@ -761,7 +793,7 @@ static int filed_sockettimeout_init(void) {
 	}
 
 	for (idx = 0; idx < maxfd; idx++) {
-		filed_sockettimeout_sockstatus[idx].valid = false;
+		filed_sockettimeout_sockstatus[idx].valid = filed_sockettimeout_invalid;
 	}
 
 	filed_sockettimeout_devnull_fd = open("/dev/null", O_RDWR);
@@ -1177,7 +1209,7 @@ static void filed_error_page(FILE *fp, const char *date_current, int error_numbe
 	filed_log_entry(log);
 
 	/* Close connection */
-	filed_sockettimeout_close(fileno(fp));
+	filed_sockettimeout_close(fileno(fp), 0);
 
 	fclose(fp);
 
@@ -1202,7 +1234,7 @@ static void filed_redirect_index(FILE *fp, const char *date_current, const char 
 	filed_log_entry(log);
 
 	/* Close connection */
-	filed_sockettimeout_close(fileno(fp));
+	filed_sockettimeout_close(fileno(fp), 0);
 
 	fclose(fp);
 
@@ -1242,7 +1274,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	/* Open socket as ANSI I/O for ease of use */
 	fp = fdopen(fd, "w+b");
 	if (fp == NULL) {
-		filed_sockettimeout_close(fd);
+		filed_sockettimeout_close(fd, 0);
 
 		close(fd);
 
@@ -1435,7 +1467,7 @@ static int filed_handle_client(int fd, struct filed_http_request *request, struc
 	close(fileinfo->fd);
 
 	if (request->headers.connection != FILED_CONNECTION_KEEP_ALIVE) {
-		filed_sockettimeout_close(fd);
+		filed_sockettimeout_close(fd, 0);
 
 		fclose(fp);
 
