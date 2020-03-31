@@ -1,8 +1,10 @@
 #! /bin/bash
 
+sourcedir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 (
 	echo '<H2>NAME</H2>'
-	man2html -H linux.die.net -M /man -p filed.1 | \
+	man2html -H linux.die.net -M /man -p "${sourcedir}/filed.1" | \
 		sed '0,/<H2>NAME<\/H2>/ d;/<H2>Index<\/H2>/,$ d;s@<A HREF="../index.html">Return to Main Contents</A>@@;s@\[@\&#91;@g;s@\]@\&#93;@g' | \
 		sed '$ d;/^ *$/ d' | \
 		sed 's@\(http://linux.die.net/man/[^+]*\)+@\1/@'
