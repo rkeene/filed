@@ -1,5 +1,22 @@
 #! /usr/bin/env bash
 
+upload='false'
+for arg in "$@"; do
+	case "${arg}" in
+		--help)
+			echo "Usage: build-precompiled [--upload]"
+			exit 0
+			;;
+		--upload)
+			upload='true'
+			;;
+		*)
+			echo "Invalid argument \"${arg}\"" >&2
+			exit 1
+			;;
+	esac
+done
+
 # Ensure we are in the correct working directory
 cd "$(dirname "$(which "$0")")/.." || exit 1
 
@@ -54,10 +71,19 @@ wait
 
 # Rename the files into place
 mkdir -p compiled
+binaries=()
 for binary in workdir-buildPrecompiled-*/filed; do
 	platform="$(echo "${binary}" | sed 's@^.*-platform-@@;s@/.*$@@')"
-	mv "${binary}" "compiled/filed-${version}-${platform}"
+	binary_dest="compiled/filed-${version}-${platform}"
+	mv "${binary}" "${binary_dest}"
+	binaries+=("${binary_dest}")
 done
+
+if [ "${upload}" = 'true' ]; then
+	for binary in "${binaries[@]}"; do
+		fossil uv add "${binary}" --as "releases/${version}/$(basename "${binary}")"
+	done
+fi
 
 # Cleanup
 rm -rf workdir-buildPrecompiled-*
