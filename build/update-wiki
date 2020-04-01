@@ -9,3 +9,67 @@ sourcedir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 		sed '$ d;/^ *$/ d' | \
 		sed 's@\(http://linux.die.net/man/[^+]*\)+@\1/@'
 ) | fossil wiki commit Manual
+
+function emit_links() {
+	local releases version filename
+	local platform url
+	local platform_str
+	declare -A version_url
+	declare -A url_platform
+
+	while IFS='/' read -r releases version filename; do
+		platform="$(echo "${filename}" | sed 's@filed-[^-]*-@@')"
+		url="/uv/${releases}/${version}/${filename}"
+
+		version_url["${version}"]+="${url} "
+		url_platform["${url}"]="${platform}"
+	done < <(fossil uv ls | grep '^releases/')
+
+	version_url['1.20']="/raw/filed-1.20-x86_64-redhat5-linux?name=ac52d7b72827e8a59b59c6ef60672e7f7679a7f3 /raw/filed-1.20-x86_64-generic-linux-musl?name=667854fd89867d925fd68144bfc140ed599a7c88 /raw/filed-1.20-i486-slackware-linux?name=d31af3a8af918f3d86bd21356f172d74c2613788 /raw/filed-1.20-mipsel-generic-linux-uclibc?name=9997701dcf0990fdef2b26cfa0b6541ee3d8b3ec /raw/filed-1.20-mips-unknown-linux-musl?name=f57701950166898abaaa4867b93e936a8df089df /raw/filed-1.20-arm-slackware-linux-gnueabi?name=81d528777aa976f7316560bb9622d4da75831266 "
+	url_platform['/raw/filed-1.20-x86_64-redhat5-linux?name=ac52d7b72827e8a59b59c6ef60672e7f7679a7f3']='x86_64-redhat5-linux'
+	url_platform['/raw/filed-1.20-x86_64-generic-linux-musl?name=667854fd89867d925fd68144bfc140ed599a7c88']='x86_64-generic-linux-musl'
+	url_platform['/raw/filed-1.20-i486-slackware-linux?name=d31af3a8af918f3d86bd21356f172d74c2613788']='i486-slackware-linux'
+	url_platform['/raw/filed-1.20-mipsel-generic-linux-uclibc?name=9997701dcf0990fdef2b26cfa0b6541ee3d8b3ec']='mipsel-generic-linux-uclibc'
+	url_platform['/raw/filed-1.20-mips-unknown-linux-musl?name=f57701950166898abaaa4867b93e936a8df089df']='mips-unknown-linux-musl'
+	url_platform['/raw/filed-1.20-arm-slackware-linux-gnueabi?name=81d528777aa976f7316560bb9622d4da75831266']='arm-slackware-linux-gnueabi'
+
+	for version in $(echo "${!version_url[@]}" | xargs -n1 | sort -rV); do
+		echo "   1. Version ${version}:"
+		for url in $(echo ${version_url["${version}"]} | xargs -n1 | sort -d); do
+			platform="${url_platform["${url}"]}"
+
+			case "${platform}" in
+				x86_64-*-linux-musl)
+					platform_str='Linux/x86_64 (static)'
+					;;
+				i?86-*-linux|i?86-*-linux-gnu*)
+					platform_str='Linux/x86'
+					;;
+				mipsel-*-linux-uclibc)
+					platform_str='Linux/MIPS (uClibc)'
+					;;
+				mips-*-linux-musl)
+					platform_str='Linux/MIPS (static)'
+					;;
+				arm-*-linux|arm-*-linux-gnu*)
+					platform_str='Linux/ARM'
+					;;
+				x86_64-*-linux|x86_64-*-linux-gnu*)
+					platform_str='Linux/x86_64'
+					;;
+				aarch64-*-linux|aarch64-*-linux-gnu*)
+					platform_str='Linux/AArch64'
+					;;
+				*)
+					platform_str="${platform}"
+					;;
+			esac
+
+			echo "     1. [${platform_str}](${url})"
+		done
+	done
+}
+
+emit_links
+
+exit 0
