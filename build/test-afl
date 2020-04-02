@@ -37,6 +37,8 @@ cp -r "${sourcedir}"/* "${workdir}/src/"
 	mkdir "${inputdir}" "${outputdir}"
 
 	echo $'GET /etc/passwd HTTP/1.1\x0d\x0aHost: example.com\x0d\x0a\x0d\x0a' > input/test-1
+	echo $'GET / HTTP/1.1\x0d\x0aHost: example.com\x0d\x0a\x0d\x0a' > input/test-2
+	echo $'GET / HTTP/1.1\x0d\x0aHost:\x0d\x0a\x0d\x0a' > input/test-3
 
 	cd 'src'
 	make distclean
