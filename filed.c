@@ -999,6 +999,9 @@ static struct filed_fileinfo *filed_open_file(const char *path, struct filed_fil
 		 */
 		fd = dup(cache->fd);
 		if (fd < 0) {
+			close(cache->fd);
+			cache->fd = -1;
+
 			pthread_mutex_unlock(&cache->mutex);
 
 			return(NULL);
